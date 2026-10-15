@@ -3,12 +3,14 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（7 项升级验收 + 修复"第二次双击无反应"与"抢不到前台时文字被丢"两个真实 BUG）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，235,520 bytes（230.0 KB）
-> `sha256 A459CD1B9C66EEEB10175E81CA3CF63A861CEDC68C228AF1A429E08C2336605C`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（12/12）
+> 最后更新：本轮（**贴图（钉在桌面）+ 设置窗口可调整大小 + 输入框抢键 BUG + 12 项安全/稳定性加固**，
+> 见 §1.5 与 §5.0）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，246,784 bytes（241.0 KB）
+> `sha256 248C179D65299ED4159322047A86AE516939F13BB9840A5F874F11142B85AE44`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（14/14）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
-> `verify_readme.py` **7/7**、`e2e_test.py` **27/27**、`check_tray.py` **6/6**
+> `verify_readme.py` **7/7**、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
+> `verify_resize.py` **9/9**（本轮新增）
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
 > 用**文件体积**和**修改时间**对比 `src\` 最新文件即可。
@@ -28,14 +30,16 @@ cd ScreenPen
 - **C# 5 语法上限**（旧 csc）：禁止字符串插值 `$"..."`、表达式体成员 `=>`、`nameof`、`?.`、
   局部函数、自动属性初始化器。用 `delegate`、`string.Format`、传统属性。`var`/lambda/匿名类型/对象初始化器可用。
 - 重新编译前**必须先删除**目标 exe（文件被占用会报 CS0016）。
-- 源码**恰好 10 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
-  `SettingsStore.cs`、`RegionSelectForm.cs`、`AppContext2.cs`、`BrushCursor.cs`、
+- 源码**恰好 11 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
+  `SettingsStore.cs`、`RegionSelectForm.cs`、`PinForm.cs`、`AppContext2.cs`、`BrushCursor.cs`、
   `SettingsForm.cs`、`OverlayForm.cs`。**没有 `HotkeyBox.cs`**（`HotkeyBox` 是
   `SettingsForm.cs` 内的私有嵌套类）。
+  > ⚠️ `build\run_probes.ps1` 与 `build\build.ps1` 的源码列表里**已经有 `src\PinForm.cs`**；
+  > 手工编译时漏掉它会在 `AppContext2.cs` 上得到 CS0246（找不到 `PinForm`）。
 
 ### 测试
 
-**首选：一条命令跑完全部 12 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 14 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
@@ -50,7 +54,7 @@ $refs = '/reference:System.dll','/reference:System.Core.dll',
         '/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll'
 $srcs = 'src\Config.cs','src\SettingsStore.cs','src\Native.cs','src\OverlayForm.cs',
         'src\BrushCursor.cs','src\RegionSelectForm.cs','src\AppContext2.cs',
-        'src\SettingsForm.cs','src\Shell.cs'
+        'src\SettingsForm.cs','src\Shell.cs','src\PinForm.cs'
 & $csc /nologo /target:exe /platform:x64 /codepage:65001 `
       /out:build\obj\my_probe.exe $refs build\my_probe.cs $srcs
 .\build\obj\my_probe.exe
@@ -121,7 +125,7 @@ D:\Miniconda3\envs\py312\python.exe build\<脚本>.py
 |---|---|---|
 | 双击即可运行的绿色 EXE | ✅ | `dist\ScreenPen.exe` |
 | 开机自动启动（HKCU Run 项） | ✅ | `AppContext2.cs` + `SettingsForm.cs` |
-| 可自定义快捷键（19 个输入框） | ✅ | `SettingsForm.cs` |
+| 可自定义快捷键（**19 个输入框** = 6 全局 + 8 工具 + 5 其它） | ✅ | `SettingsForm.cs`（`AddHotkeyRow` ×6 建前两组，`AddToolKeyRow` ×13 建后 8+5 行，两者都转调 `AddKeyRow`） |
 | 笔宽 `[` / `]` 调节 | ✅ | `OverlayForm.AdjustPenWidth` |
 | 颜色切换（1–8 / 调色板） | ✅ | `OverlayForm.SelectColor` |
 | 工具切换 `P/L/R/O/A` | ✅ | `Config.ToolForKey` |
@@ -263,13 +267,229 @@ D:\Miniconda3\envs\py312\python.exe build\<脚本>.py
 - `footer_probe.cs` — **12/12 PASS**。
 - `render_ui.cs` 逐页渲染 PNG 人工确认：`build\shots\render\`。
 
+### 1.5 第四轮升级：贴图 / 设置窗口可调大小 / 输入框抢键 / 安全加固（已完成）
+
+用户本轮提了四条：**① 设置面板不可以手动调整大小；② 按 `T` 打字时敲到 `L`/`P`/`O`/`E`/`A`
+就无法继续输入；③ 截图可以钉在桌面上；④ 按审计报告做安全与稳定性加固**。
+四条全部完成，下面按条记录根因、改法与证据。
+
+#### 1.5.1 【新功能】贴图：把截图钉在桌面（`src\PinForm.cs`，**新文件**）
+
+**入口**（三条，都复用同一个框选界面）：
+
+| 入口 | 代码位置 |
+|---|---|
+| 托盘菜单 **区域截图并钉在桌面** | `AppContext2.BuildTray()`（`RegionAction.PinToDesktop`） |
+| 框选时按裸键 `P` | `RegionSelectForm.OnKeyDown` |
+| 框选时点工具条 **贴图 (P)** / 在选区内双击（当默认动作是贴图时） | `RegionSelectForm.OnMouseDown` / `OnMouseDoubleClick` |
+
+**`RegionAction` 枚举新增成员**（`src\RegionSelectForm.cs` L10–17）：
+
+```csharp
+public enum RegionAction
+{
+    Cancelled = 0,
+    SaveToFile = 1,
+    CopyToClipboard = 2,
+    /// <summary>把选区作为一张置顶贴图钉在桌面上（Snipaste 风格）。</summary>
+    PinToDesktop = 3
+}
+```
+
+> ⚠️ **`0/1/2` 的数值必须保持稳定**：这三个值既进过探针断言，也是
+> `RegionAction.Cancelled` 作为"默认值 / 归一化目标"的语义基础
+> （`_defaultAction = defaultAction == RegionAction.Cancelled ? SaveToFile : defaultAction`，
+> 以及 `Finish()` 里 `if (action != Cancelled && (!_hasSelection || Width < 1)) action = Cancelled;`）。
+> 新动作只能**追加**到末尾，不要重排、不要插队。
+
+**为什么裸 `P` 放在 Ctrl 分支之后**（`OnKeyDown`，注释原文在代码里）：
+选择器自己只占用 `Esc` / `Enter` / `Ctrl+C` / `Ctrl+A` / 方向键，裸 `P` 是空的；
+但把它写在 `if (e.Control)` 之前就会**永久遮蔽未来的 `Ctrl+P`**。现在的顺序是
+`Esc → Enter → Ctrl+C → 裸 P（且要求 !Control && !Alt）→ 方向键 → Ctrl+A`。
+
+**`PinForm` 的设计约束（改这个文件前务必读完）**：
+
+| 约束 | 说明 |
+|---|---|
+| **窗口是独立顶层窗口**，不属于任何父窗口 | `FormBorderStyle.None` + `ShowInTaskbar = false` + `TopMost = true` + `KeyPreview = true`（`Esc`/`Ctrl+C` 必须由窗体自己收到）。构造完立刻 `Activate()`（`OnShown`），无边框窗口 `Show()` 后未必拿到焦点 |
+| **缩放只重算 `ClientSize`，绝不用 `Form.Scale`** | `ScaledSizeFor(scale, workArea)` 每次都用**原始** `_baseSize` 重算（`_baseSize * _scale`），所以缩放是精确、可逆、不累积误差的。`Form.Scale` 会把比例累乘到窗体和子控件上，重复调用因取整逐次漂移（与 §1.4.1 的 `Scale()` 不幂等是同一个坑） |
+| **拖动用光标屏幕坐标增量，不用 `e.Location`** | 窗口自己在动，用相对按下点的差值会中途归零 → 拖动卡死。只有 `DragBy(dx,dy)` 一个移动实现（`dx==0 && dy==0` 直接返回） |
+| **滚轮等比缩放** | `factor = Math.Pow(1.12, e.Delta / 120.0)`，锚点是**光标下的图像比例保持不变**（贴边被夹回工作区时略有偏差，可接受） |
+| **比例夹在 `[MinScale=0.1, MaxScale=8.0]`，窗口夹在工作区** | `ClampLocation` 保证**至少 40px（`MinVisible`）留在屏幕内**，拖不丢；`ApplyScale` 里比例未变（`< 0.0005f`）直接早退，不做无谓重排 |
+| **关闭按钮随窗口缩小** | `CloseSize = 22` / `CloseMargin = 2`，`CloseButtonBounds` 在小窗口里向内收缩；探针断言它**永不超出缩小的窗口**。只在鼠标悬停（`_mouseInside`）时绘制，拖动中被捕获离开窗体不算移出（否则按钮会闪） |
+| **右键直接关闭**，且必须放在左键拖动分支之前 | 否则会被拖动分支吃掉 |
+| **`RoundedRect` 是本地实现，故意不复用 `OverlayForm.RoundRect`** | `PinForm` 要能被单文件探针独立编译引用，不多引一层依赖 |
+| **不做模态对话框** | `SaveFileDialog`（用户主动发起）可以模态；`Ctrl+C` 失败**只用 `ToolTip` 提示 1800ms**，绝不 `MessageBox`（无边框窗口弹模态会把整个程序卡住，也违反 §0 测试卫生） |
+| **`PinForm` 拥有位图** | 见下面的所有权契约 |
+| **测试缝** | `TestScale` / `TestBaseSize` / `TestImage`（**探针只读，不得释放**）/ `TestIsClosed` / `IsClosed` / `TestSetScale` / `TestWheelZoom` / `TestDragBy` |
+
+**位图所有权契约（最容易写出双重释放的地方）**：
+
+1. 构造函数拿走所有权：`PinForm(Bitmap image, Rectangle screenRect)`，`Dispose` 时释放 `_image`。
+2. 调用方（`AppContext2.PinScreenshot`，L688）在把位图交出去之后**立刻把本地引用置 `null`**：
+   ```csharp
+   Bitmap toPin = cropped;
+   cropped = null;          // 交出去之前先清本地
+   PinScreenshot(toPin, region);
+   ```
+   否则外层 `finally { cropped.Dispose(); }` 会释放**贴图正在显示的那张位图**。
+3. `PinScreenshot` 里再把本地也置 `null`（`bmp = null`），失败路径**恰好释放一次**：
+   构造函数抛异常 → `bmp.Dispose()`；`Show()` 抛异常 → 释放窗体（窗体释放位图）。
+4. `PinForm.Dispose(bool)` **只在 `disposing == true` 时**释放 `_image`，因此 Dispose 是
+   唯一的释放点：若构造函数中途抛异常，所有权仍在调用方手上，而 `Component` 的终结器会用
+   `disposing == false` 再走一遍本方法——那时释放就会和调用方**重复释放同一张位图**。
+   重复调用 `Dispose()` 也安全（第二遍 `_image` 已是 `null`）。
+5. 构造函数接受 `image == null`（探针会这么用），此时 `_baseSize` 回退 `240×160`，
+   **绝不能把空引用异常抛出构造函数之外**。
+6. `ApplyScale` / `OnPaint` / `OnMouseDown` 里的一切窗口操作都包在 `try/catch` 里，
+   异常不得抛进输入事件处理链。
+
+**所有贴图必须随程序退出一起关闭**（`AppContext2.CloseAllPins()`，L758）：
+
+- `Quit()`（L980）与 `Dispose(bool)` 都调用。**没有这一步，贴图会在托盘进程退出后继续浮在桌面上。**
+- 遍历的是 `_pins.ToArray()` 快照而不是列表本身：`Close()` 会泵消息、可能重入，
+  **枚举中改列表是硬崩溃**。
+- 逐个 `FormClosed -= PinFormClosed` → `Close()` → `Dispose()`，每步各自 `try/catch`。
+- `PinFormClosed`（L739）负责从 `_pins` 移除并释放窗口。
+
+#### 1.5.2 【BUG】按 `T` 打字时，单键命令抢走按键（真实产品 BUG）
+
+**用户报告**（原文）：*"我按下 T，进行打字的时候，按到其他的有特殊意义的按键会触发，
+比如：L，P，O，E，A 等按键，然后打字就无法输入了"*。
+
+**根因**：`OverlayForm` 设了 `KeyPreview = true`，所以 **overlay 的 `KeyDown` 先于聚焦的
+`TextBox` 执行**。`AppContext2.OverlayKeyDown`（L314 起）里的单键分支各自 `e.Handled = true`，
+字符**根本没送到输入框**：
+
+| 按键 | 被抢走的动作 |
+|---|---|
+| `L` | 切直线工具 |
+| `P` | 切画笔 |
+| `O` | 切椭圆 |
+| `A` | 切箭头 |
+| `E` | 清空全部标注 |
+| `B` | 循环颜色 |
+| `1`–`8` | 直接选调色板颜色 |
+
+**修法**：在 `OverlayKeyDown` 的**最前面**（`Keys code = e.KeyCode;` 之后、`Esc` 分支之前）加一道闸：
+
+```csharp
+// While the inline text editor is open, every key belongs to it.
+// ...
+// Returning without touching e.Handled hands the key straight back to
+// the editor. Esc and Enter still work: TextEditorKeyDown handles
+// both (Esc discards this label, Enter commits it).
+if (_overlay.IsEditingText) return;      // AppContext2.cs L331
+```
+
+- `OverlayForm.IsEditingText`（L2020）= `_textEditor != null`。**不设 `e.Handled`** 是关键：
+  WinForms 会继续把该键派发给聚焦控件。
+- `Esc` / `Enter` 不受影响：它们由 `TextEditorKeyDown` 自己处理（`Esc` 丢弃本次标注，
+  `Enter` 提交）。
+- **`Tab` 有第二条路径**：`Form` 在**消息层**（早于 `IsInputKey`）就把 `Tab` 当导航键处理，
+  所以 `OverlayForm.ProcessCmdKey`（L469）里也要放行：
+  ```csharp
+  if ((keyData & Keys.KeyCode) == Keys.Tab)
+  {
+      if (_textEditor != null) return base.ProcessCmdKey(ref msg, keyData);
+      SetTabHeld(true);
+      return true;      // 非打字状态：吞掉，绝不让 Tab 把焦点移出 overlay
+  }
+  ```
+  不放行的后果不是"打不出字"，而是 **`_tabHeld` 卡在 `true`**——提交文字后的下一次拖动
+  会**悄悄变成椭圆**。
+
+**验证**：
+
+- `build\typing_probe.cs`（**新增**）—— 命令键清单
+  `Keys.L, P, O, E, A, B, D1, M, R, T, F, D0`；断言打字时**没有任何命令键被吞**、
+  工具未变、颜色未变、没有产生笔画、`Tab` 不会把 `_tabHeld` 闩住，
+  并用真实 `WM_CHAR` 把 `lpoeab1` 送进编辑器、断言 `CommitTextEditing(true)` 后标注还在。
+  → 日志 `build\obj\typing_probe.log`：**19 `[PASS]`，0 `[FAIL]`**。
+- 顺带加严的邻近约束：`OverlayForm.OnMouseMove`（L1757–1778）里 `if (_textEditor != null) return;`
+  —— **打字时绝不干扰绘图状态**。
+
+#### 1.5.3 【UI】设置窗口现在可以手动调整大小
+
+**用户报告**（原文）：*"设置面板不可以自己手动调整大小"*。
+
+**改法**（`src\SettingsForm.cs`）：
+
+| 位置 | 变更 |
+|---|---|
+| L126 | `FormBorderStyle = FormBorderStyle.FixedSingle` → **`Sizable`** |
+| L127–128 | `MaximizeBox = true`（原来随 `FixedSingle` 无意义）、`MinimizeBox = true` |
+| L197 `ApplyMinimumSize()` | **新增**。`MinClientWidth = 560` / `MinClientHeight = 460` 是**作者在 96 DPI 下写的最小客户区**，经 `ScaleSize()` 换算到当前 DPI，再各自加上**非客户区边框**（`Width - ClientSize.Width` / `Height - ClientSize.Height`）才是 `MinimumSize` |
+| L210 `ScaleSize(Size)` | `_dpiScale <= 1.01f` 时原样返回（96 DPI 机器不受影响） |
+| L235 `OnResize` | `if (!_ready) return; LayoutFooter(); RefreshScrollExtents();` |
+
+**三条硬约束（都写进了代码注释，别"顺手优化"）**：
+
+1. **`MinimumSize` 必须在 `ClientSize` 之后设置**（`ApplyMinimumSize()` 是构造函数最后一步，
+   L163）。`MinimumSize` 会**夹住 `Size`**，提前设会把刚排好的（可能已按 DPI 放大的）
+   布局压小。
+2. **`AutoScaleMode.None` 是刻意保留的**（L134）：所有控件都用显式像素 `Bounds`，
+   `Font` 模式的自动缩放会把它们**再缩放一次**（整体变小 + 中文被裁）。
+3. **窗口**刻意**不 reflow**：拉大只多出背景，卡片列、头部、每个测量过的子控件都保持
+   DPI 那一次给出的尺寸。真正随宽度变化的只有两样东西：**锚定的页脚按钮**（`LayoutFooter()`）
+   和**每页的滚动范围**（`RefreshScrollExtents()`）。
+   > ⚠️ **`OnResize` 里绝对不能重新调用 `Scale()` / `ApplyDpiScale()`**：
+   > `Scale()` **不幂等**（重复调用会再乘一次比例），而且卡片宽度是被断言过等于
+   > `780 × DPI 因子` 的（`measure_ui.cs`）。
+
+**验证**：`build\verify_resize.py`（**新增**，跨进程，9 项）——直接对 `dist\ScreenPen.exe`
+的真实窗口断言：样式含 `WS_THICKFRAME`；样式含 `WS_MAXIMIZEBOX`；拉大后客户区确实变大；
+往小里拖被下限夹住；**放大后**页脚三个按钮仍在窗口内、**最小时**仍在窗口内、且没有按钮
+溢出窗口；把窗口调回设计尺寸后能恢复（±2px）。
+→ 前置参考图：`build\shots\20_settings_min.png` / `21_settings_wide.png`。
+
+#### 1.5.4 安全 / 稳定性加固（审计 12 项）
+
+下面 12 条是审计报告的全部整改项。**行号会随代码变动，所以每条同时给出方法名——
+以方法名为准定位，行号只是当轮快照。**
+
+| # | 问题 | 位置（方法名 + 当轮行号） | 修法 |
+|---|---|---|---|
+| 1 | **画笔笔画点数无上限**：一条不断的笔画以 100–200 采样/秒累积，画几分钟后内存与每帧开销无界 | `OverlayForm`：`MaxStrokePoints` 常量 L40；`OnMouseMove` L1757–1778 | 点数上限 `20000`，到顶后**停止收录新点**（现有几何保持不变） |
+| 2 | **同一位置的重复采样**：鼠标移动事件远比指针实际位移密，慢画时攒下大量近乎重合的点，只增加内存与每帧 densify 开销 | `OverlayForm.MinSampleDist` L54；`OnMouseMove` L1757–1778 | 与上一点距离 `< 1.5f` 的采样**丢弃**。存下来的仍是**原始鼠标采样**（从不插值），且 1.5px 远低于可见抖动；所有测试钩子每步 ≥ 10px，**探针点数断言不变** |
+| 3 | **每帧重复 densify**：`DrawStroke` 每帧为每条平滑笔画重建 `Densify(new List<PointF>(pts), 3f)`，静止的笔画一秒被细分 60+ 次 | `OverlayForm.DensifiedFor()` L99 + `DenseEntry` L72 + `_denseCache` L79 + `InvalidateDensifyCache()` L131 | 按 **`Stroke` 引用**（`Stroke` 是普通 sealed 类，无 `Equals`/`GetHashCode` 重写，默认引用相等正是"同一笔画"该有的语义）+ **点数** + **缩放**做缓存。缓存放在**屏幕坐标**（`Densify` 只看点差，纯平移不会失效）。`InvalidateDensifyCache()` 在几何变化处全部调用：`ShiftAnnotations` L950、`Undo` L2051、`Clear` L2061、`ClearForTest` L2157、`Dispose` L2295。**缓存只影响渲染，绝不写回 `s.Points`**（§1.4.3 的老规矩） |
+| 4 | **换颜色泄漏 GDI 句柄**：每次改色都泄漏 1 个 HICON + 2 个 DIB，撑到 10000 句柄上限就画不出东西 | `OverlayForm.ReleaseBrushPointer()` L263 + `ApplyCursorForMode()` L273 | 装新光标前**先摘再放**（`Cursor = Cursors.Default` 之后再 `DestroyIcon`），然后装新的 |
+| 5 | **图标加载泄漏 HICON**：`Icon.FromHandle` 用完不销毁 | `Shell.IconFromBytes()` L155（`DestroyIcon` 在 L171–172 的 `finally`）、`Shell.GenerateFallback()` L197（同上 L216–217） | `(Icon)Icon.FromHandle(h).Clone()` + `finally { DestroyIcon(h); }` |
+| 6 | **托盘提示的复制路径泄漏位图**：`CopyToClipboard` 每次调用泄漏一个 32bpp 暂存位图（本机 `2860×1800` 约 **20.6 MB/次**） | `AppContext2.CopyToClipboard()` L885，暂存位图在 L902 | 暂存位图用 `using` 作用域包起来；`SafeSetClipboardImage` 的 `CF_BITMAP` 路径**复制像素**，所以随即释放是正确的 |
+| 7 | **框选截图的马赛克/聚光灯位图可能不释放**：`DrawMosaic` 里中途抛异常就漏掉一个全屏位图 | `OverlayForm.DrawMosaic`：`Bitmap raw` 上提到 L1437，`finally` 在 L1470 | `raw` 提升到 `try` 之外，`finally` 里无条件 `Dispose` 并置 `null`（`tile` 在 `catch` 里释放） |
+| 8 | **配置写入非原子**：旧实现先 `Delete` 再 `Move`，两步之间崩溃/断电就**一份配置都不剩**，下次启动静默回到出厂值 | `SettingsStore.Save()` L96，`File.Replace` / `File.Move` 在 L182–183 | 先写 `path + ".tmp"`，再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`）。传 `null` 备份是**故意**的：不在目录里留 `.bak` 垃圾。失败时删掉 tmp 并返回 `false`，**从不抛异常** |
+| 9 | **保存失败静默**：装目录只读 / 磁盘满时，用户以为存上了，重启才发现全丢 | `AppContext2.OpenSettings()` L927，`bool saved = SettingsStore.Save(_cfg)` 在 L951 | 保存返回 `bool`；`false` 时气球提示 **"设置保存失败"** + *"配置未能写入磁盘，本次改动仅对当前运行有效。"* |
+| 10 | **热键注册失败静默**：某个全局热键被别的软件占用时，用户只看到"按了没反应" | `AppContext2.ReportHotkeyProblems()` L77、`TryRegister()` L170、`_failedHotkeys` L38/184、检查点 L964–968 | `TryRegister` 把失败的 `显示名 = 键` 记进 `_failedHotkeys`；启动与打开设置时据此提示（注释原文："Registration failures used to be silent"） |
+| 11 | **截图格式未校验就拼进文件名**：`"png/../../x"` 之类会让 `Path.Combine` 归一化到截图目录**之外** | `Config.Clamp()` L215，格式白名单 L227–233 | 去空白、去前导 `.`、转小写；`jpeg → jpg`；**只允许 `png` / `jpg` / `bmp`**，其它一律回退 `png` |
+| 12 | **崩溃提示被置顶窗口挡住**：overlay/贴图是 `TopMost`，`MessageBox` 弹在它们**后面**，用户只看到程序"卡住" | `Program.ReportCrash()` L83，取消置顶 L107，`MessageBoxOptions.DefaultDesktopOnly` L122 | 写 `.error.log` → 遍历 `Application.OpenForms` 逐个 `TopMost = false` → 再用 `DefaultDesktopOnly` 弹框 |
+
+> 另有两处顺带收紧、可视为上述条目的配套：
+> - `OverlayForm.StartScrollFollow()` L645：`SetExcludedFromCapture` 的返回值**不再忽略**，
+>   失败时置 `_followRefusal = "系统不支持抓屏排除，跟随滚动可能不准"`。
+> - `Config.Clamp()` L244–256：单键字段为空白时从 `new Settings()`（出厂默认）**补回**该键，
+>   而不是静默让那个工具不可达（白名单外的非法赋值同样被挡在 L227–233）。
+
+**验证**：`build\run_probes.ps1` 全绿（**14/14**）。与本节直接相关的两个新探针：
+`pin_probe.cs` → `build\obj\pin_probe.log` **57 `[PASS]`，0 `[FAIL]`**；
+`typing_probe.cs` → `build\obj\typing_probe.log` **19 `[PASS]`，0 `[FAIL]`**。
+`pin_probe.cs` 覆盖：选择器工具条 4 个按钮 + `PinToDesktop` 裁切；`PinForm` 几何
+（1.0×/2.0×、下限夹取、上限夹取、40 次往返无漂移、每格 1.12×、光标锚点缩放偏移为 `(0,0)`、
+拖动增量、零距离拖动、关闭按钮尺寸/位于窗内/永不超出缩小后的窗口、`Esc` 关闭、关闭释放位图）；
+位图所有权（打开期间存活、`Dispose` 清空引用、释放调用方位图、幂等、`null` 图不抛、
+`null` 图尺寸为 `{240,160}`、干净释放）；多张贴图互不影响；控制器集成
+（新控制器 0 张贴图、`PinScreenshot` 被跟踪、移交后的位图存活、贴图拥有位图、始终置顶）。
+
+> ⚠️ 探针断言条数以 `build\obj\*.log` 里的 `[PASS]` 行数为准（`pin_probe` 57 条、
+> `typing_probe` 19 条）。**不要**把这里的数字当成固定不变量——加断言时它就会变。
+
 ---
 
 ## 2. 待修复的缺陷（TODO）
 
 > **§2.1–§2.4 已全部完成**（见 §1.4）。本节保留原始的问题描述与根因分析，
 > 作为"这些问题当初为什么会出现"的历史记录，以及**验收标准的出处**。
-> **当前唯一未完成的是 §2.5。**
+> **§2.1–§2.5 现已全部完成**；本节保留的"修复方向 / 验收"是**当时的计划**，
+> 实际落地方式见 §1.4 / §1.5，两者若有出入以代码为准。
 
 ### 2.1 【UI】导航栏文字被截断成一个字 —— ✅ 已修复（§1.4.2）
 
@@ -320,10 +540,14 @@ emoji 走的是 fallback 字体（Segoe UI Emoji），其 advance width 在 GDI+
 
 **根因**：
 
-1. `NewPage()`（L327–362）里 `AutoScroll = false`，并且注释明确说
+1. `NewPage()`（L327–362，**当时的行号**）里 `AutoScroll = false`，并且注释明确说
    *"The window is fixed-size and every page fits, so scrolling is unnecessary."*
    —— **这个假设是错的**。「常规」和「关于」页的内容高度超过
    `DialogHeight - header(64) - footer(60)`，超出部分直接看不见。
+   > 📌 上面引的是**当时那一版**的注释。修好之后 `NewPage()` 改为 `AutoScroll = true`
+   > （`FinishPage()` 用 `AutoScrollMinSize` 定虚拟高度），这段旧注释也一并被改写了。
+   > 另外窗口**现在是可以调整大小的**（见 §1.5.3），所以"fixed-size"这个前提本身也不成立了——
+   > 这也是为什么页脚与滚动范围必须随 `OnResize` 重算。
 2. `FinishPage()`（L398–420）会测量卡片子控件并把卡片**加高**，
    于是卡片总高度进一步超过可视区，但没有滚动条兜底。
 3. 卡片内的说明文字用 `MaximumSize = new Size(330, 0)` 限制宽度
@@ -477,9 +701,9 @@ g.DrawLines(pen, pts);          // ← 直线段连接，几何上就是折线
 
 ---
 
-### 2.5 【其他】本轮修复记录与仍然存在的陷阱
+### 2.5 【其他】上一轮的修复记录与仍然存在的陷阱
 
-**本轮（第 5 轮）已修复的缺陷与验证结果：**
+**上一轮（第 5 轮）已修复的缺陷与验证结果：**
 
 | 项目 | 状态 | 证据 |
 |---|---|---|
@@ -569,20 +793,40 @@ EXE 没反应"。根因用 `build\broadcast_probe.cs` 证实：
   `PenKey → LineKey → RectKey → EllipseKey → ArrowKey → TextKey → MosaicKey → SpotlightKey`，
   返回第一个匹配；`ClearKey` 在 `OverlayKeyDown` 的 `default:` 分支里**最后**检查，
   所以工具键永远压制清空键。**改这个顺序会改变用户已保存配置的行为语义。**
+- ⚠️ **本地键必须先让位给正在打字的文字编辑器**（§1.5.2 的真实 BUG）。
+  `OverlayForm` 设了 `KeyPreview = true`，所以 `AppContext2.OverlayKeyDown` **先于**
+  聚焦的 `TextBox` 收到按键；不加守卫时 `L/P/O/E/A/B/1`–`8` 会被当成命令吞掉，
+  用户"打字打到一半就打不进去了"。
+  现在 `OverlayKeyDown` 的第一句就是：
+  ```csharp
+  if (_overlay.IsEditingText) return;   // 不设 e.Handled，把键原样还给输入框
+  ```
+  **将来往 `OverlayKeyDown` 里加任何单键命令，都必须加在这句之后**，
+  并且**绝不能设 `e.Handled`**（否则等于把用户的字符吃掉）。
+  `Tab` 更早一层：它在 `OverlayForm.ProcessCmdKey`（消息层，比 `KeyDown` 更早）里就必须放行，
+  否则 `_tabHeld` 会闩在 `true`，用户提交文字后的**下一次拖动会变成椭圆**。
+- **框选选择器（`RegionSelectForm`）自己的键也是本地键**：`Esc` / `Enter` / `Ctrl+C` /
+  `Ctrl+A` / 方向键 / 裸 `P`。裸 `P` 的 `if` **必须写在 `Ctrl` 分支之后**——
+  写在前面就会永久遮蔽将来可能加的 `Ctrl+P`。
+- **`RegionAction` 的数值是契约**：`Cancelled = 0` / `SaveToFile = 1` /
+  `CopyToClipboard = 2` / `PinToDesktop = 3`。`0` 同时被当作"未指定"的哨兵
+  （构造时 `defaultAction == Cancelled` 会归一化成 `SaveToFile`；`Finish()` 里选区为空也会
+  退化成 `Cancelled`）。**新动作只能追加，不要插队或重排。**
 
 ### 3.3 设置持久化
 
 - 平铺 JSON，放在 EXE 同目录 `ScreenPen.settings.json`，**共 49 个键**，绿色免安装。
-- 出厂默认值备份在 `build\obj\settings.backup.json`，
-  另有一份只读基线 `build\obj\pristine.settings.json`。
-- ⚠️ **校验时不要比文件哈希**：`pristine.settings.json` 是带空行分组的排版版本
-  （1398 bytes / 59 个 CRLF），而程序自己写出来的是紧凑版
-  （1355 bytes / 51 个 CRLF）。两者**键、值、顺序完全一致**，但字节不同。
-  要按**值**逐键比对：
+- ⚠️ **`build\obj\` 整个目录都不入版本库**（`.gitignore`）且常被清理，里面**没有**长期保存的
+  出厂基线：`settings.backup.json` / `pristine.settings.json` 在当前工作区**已不存在**。
+  现在的实际基线就是 **`dist\ScreenPen.settings.json` 本身**（1355 bytes / 51 个 CRLF / 49 个键），
+  以及脚本自己抓的快照 `build\obj\pre_suite.json`、`build\obj\e2e_pre.json`（各 1366 bytes）。
+  需要长期基线时**现场重新生成**：删掉 `dist\ScreenPen.settings.json` → 启动一次 EXE → 拷出来。
+- ⚠️ **校验时不要比文件哈希**：格式化过的 JSON 与程序写出来的紧凑版**键、值、顺序完全一致、
+  字节却不同**。要按**值**逐键比对（下面的脚本用 `ConvertFrom-Json` 逐键比，不碰哈希）：
 
   ```powershell
   $a = Get-Content -Raw dist\ScreenPen.settings.json   | ConvertFrom-Json
-  $b = Get-Content -Raw build\obj\pristine.settings.json | ConvertFrom-Json
+  $b = Get-Content -Raw build\obj\pre_suite.json       | ConvertFrom-Json   # 你自己抓的快照
   $diff = 0
   foreach ($p in $b.PSObject.Properties) {
     $av = $a.PSObject.Properties[$p.Name]
@@ -598,6 +842,11 @@ EXE 没反应"。根因用 `build\broadcast_probe.cs` 证实：
   `PenWidth=3`、`MinPenWidth=1`、`MaxPenWidth=20`、
   `ZoomStepPercent=25`、`MinZoom=0.5`、`MaxZoom=8`。
 - 调色板默认 8 色：`#FF3B30 #FF9500 #FFCC00 #34C759 #007AFF #AF52DE #FFFFFF #000000`。
+- **本轮加固后的两条写入侧约束**（见 §1.5.4 #8/#11）：
+  - `SettingsStore.Save()` 是**原子**的（写 `.tmp` → `File.Replace`），
+    并且**返回 `bool`**——调用方必须检查，`false` 要提示用户（`AppContext2.OpenSettings`）。
+  - `Config.Clamp()` 会对 `ScreenshotFormat` 做**白名单**（`png`/`jpg`/`bmp`，其它回退 `png`），
+    因为该值会被拼进文件名；改动格式相关的代码时**不要绕过 `Clamp()`**。
 
 ### 3.4 单实例
 
@@ -641,6 +890,19 @@ Accent   = RGB(232, 160, 0)
 | 用 `pwsh` 量真实窗口尺寸 | 拿到减半的 `1183×852`，误判"修复没生效" | 先 `SetThreadDpiAwarenessContext(-4)`；用 `SM_CXSCREEN` 自检 |
 | `Dock=Fill` 面板想用 `Size` 定滚动范围 | 滚不动 | 用 `AutoScrollMinSize` |
 | `Select-String -Pattern 'FAILED'` | 每个探针都打印小写 `0 failed`，**全部误判为失败** | 加 `-CaseSensitive` |
+| `KeyPreview = true` 的窗体 + 正在输入的 `TextBox` | 用户按 `L`/`P`/`O`/`E`/`A` 打字时工具被切换、清空被触发，**字符进不去**（真实 BUG，§1.5.2） | 命令分发前先 `if (_overlay.IsEditingText) return;`——**不设 `e.Handled`**，让键继续派发给聚焦控件 |
+| `Tab` 在打字时被 overlay 吞掉 | `_tabHeld` 闩在 `true`，提交文字后**下一次拖动变椭圆** | `ProcessCmdKey` 里 `_textEditor != null` 时 `return base.ProcessCmdKey(...)`（消息层比 `KeyDown` 更早，只有一个放行点） |
+| 用 `Form.Scale()` 实现"滚轮缩放贴图" | 比例累乘、取整逐帧漂移，缩不回原尺寸 | 保存 `_baseSize`，每次**从原始尺寸重算** `Size = _baseSize * _scale`（§1.5.1） |
+| 贴图窗口拖动时用 `e.Location` 算增量 | 窗口自己在动，相对位移反复归零，**拖动一开始就卡死** | 用 `Cursor.Position`（屏幕坐标）的增量，`_dragCursorScreen` 记起点 |
+| 把位图交给 `PinForm` 后忘了把本地引用置 `null` | 外层 `finally { cropped.Dispose(); }` 释放**贴图正在显示**的位图 → 贴图变黑/崩溃 | 交出所有权时立即 `cropped = null;`（`AppContext2.cs` L615–616），`PinScreenshot` 里同样 `bmp = null;`（L701） |
+| `PinForm.Dispose(bool)` 无条件释放 `_image` | 构造函数抛异常时调用方仍持有位图，终结器路径**二次释放**同一张位图 | 只在 `disposing == true` 时释放；`disposing == false`（终结器）什么都不做 |
+| 托盘退出时不关贴图窗口 | 进程退出后贴图**继续浮在桌面上** | `Quit()` 与 `Dispose(bool)` 都调用 `CloseAllPins()`（§1.5.1） |
+| 遍历 `_pins` 的同时 `Close()` | `Close()` 会泵消息、可能重入，**枚举中改列表是硬崩溃** | 先 `PinForm[] snapshot = _pins.ToArray(); _pins.Clear();` 再遍历快照 |
+| 在 `OnResize` 里重新跑 `Scale()` / `ApplyDpiScale()` | 比例再乘一遍，卡片宽度不再等于 `780 × DPI 因子`（`measure_ui.cs` 会红） | 窗口**刻意不 reflow**；`OnResize` 只重跑 `LayoutFooter()` + `RefreshScrollExtents()`，用 `_ready` 门控构造函数期间的伪 resize |
+| 在 `ClientSize` 之前设 `MinimumSize` | `MinimumSize` 会夹住 `Size`，刚排好的（已按 DPI 放大的）布局被压小 | `ApplyMinimumSize()` 必须是构造函数**最后一步**；最小值 = 96 DPI 设计值 × DPI + 非客户区边框（`Width - ClientSize.Width`） |
+| 设置写入用 `Delete` + `Move` 两步 | 两步之间崩溃/断电 → **一份配置都不剩**，静默回出厂值 | 写 `.tmp` → `File.Replace(tmp, path, null)`（无文件时 `File.Move`）；失败删 tmp 返回 `false`。`Save` 的返回值**必须检查**，否则"保存失败静默"（§1.5.4 #8/#9） |
+| `TopMost` 窗口下弹 `MessageBox` | 崩溃提示被 overlay/贴图**盖住**，用户只看到"卡住" | 弹框前把 `Application.OpenForms` 逐个 `TopMost = false`，并用 `MessageBoxOptions.DefaultDesktopOnly` |
+| `Bitmap raw` 在 `try` 内部声明 | 中途抛异常时**全屏位图泄漏**（几十 MB/次） | 声明移到 `try` 之外，`finally` 里无条件 `Dispose` 并置 `null` |
 
 ---
 
@@ -648,7 +910,7 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (12/12)** | 编译并运行下面 12 个进程内探针，逐个打印 PASS/FAIL |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (14/14)** | 编译并运行下面 14 个进程内探针，逐个打印 PASS/FAIL |
 | `build\hotkey_conflict_probe.cs` | 进程内 | **29/29 PASS** | 快捷键冲突 UX（含 `PromptOverride`） |
 | `build\region_probe.cs` | 进程内 | **PASS** | 区域截图、裁剪、剪贴板、保存、取消 |
 | `build\follow_probe.cs` | 进程内 | **24/24 PASS** | 滚动跟随（算法层 + F 集成层 + 滚轮路由） |
@@ -661,6 +923,8 @@ Accent   = RGB(232, 160, 0)
 | `build\hotkey_record_probe.cs` | 进程内 | **8/8 PASS** | **快捷键捕获的唯一可靠证据**：真 `WM_KEYDOWN` + 真修饰键态 |
 | `build\text_focus_probe.cs` | 进程内 | **ALL PASS** | 前台正常时文字编辑器存活并落成笔画 |
 | `build\hostile_focus_probe.cs` | 进程内 | **ALL PASS** | **别的进程占着前台时**，overlay 夺回前台、编辑器存活 |
+| `build\pin_probe.cs` | 进程内 | **57 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：贴图。选择器工具条 4 按钮 + `PinToDesktop` 裁切；`PinForm` 几何（缩放上下限、往返无漂移、滚轮 1.12×、光标锚点、拖动、关闭按钮随窗缩、`Esc` 关闭、释放位图）；位图所有权（存活/清引用/幂等/`null` 图）；多贴图互不影响；控制器集成（`PinScreenshot` 跟踪、始终置顶） |
+| `build\typing_probe.cs` | 进程内 | **19 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：打字时单键命令不抢键。命令键清单 `L/P/O/E/A/B/1/M/R/T/F/0`；`Tab` 不闩 `_tabHeld`；`WM_CHAR` 送入后文字成笔画 |
 | `build\render_ui.cs` | 诊断 | — | 逐页渲染 PNG → `build\shots\render\`，**供人眼看** |
 | `build\verify_hotkeys.py` | 跨进程 E2E | **20/20 PASS** | 快捷键重绑 + 冲突保存 + 读回校验 |
 | `build\verify_brush.py` | 跨进程 | **17/17 PASS** | 画笔光标 |
@@ -668,7 +932,8 @@ Accent   = RGB(232, 160, 0)
 | `build\e2e_test.py` | 跨进程 | **27/27 PASS** | 端到端（跑得慢，约 3–5 分钟，不要误判为卡死） |
 | `build\check_tray.py` | 跨进程 | **6/6 PASS, exit 0** | 托盘图标注册（`Shell_NotifyIconGetRect` + 负向对照） |
 | `build\verify_readme.py` | 跨进程 | **7/7 PASS** | README 一致性（**会改写 `dist\ScreenPen.settings.json`，前后要快照/还原**） |
-| `build\verify_upgrade.py` | 跨进程 | **26/26 PASS** | 本轮 7 项需求的综合验收 |
+| `build\verify_upgrade.py` | 跨进程 | **26/26 PASS** | 上上轮 7 项需求的综合验收 |
+| `build\verify_resize.py` | 跨进程 | **ALL RESIZE CHECKS PASSED**（9 项） | **本轮新增**：设置窗口可调整大小。对真实 `dist\ScreenPen.exe` 断言 `WS_THICKFRAME` / `WS_MAXIMIZEBOX`、放大生效、缩小被下限夹住、页脚按钮在放大后/最小时都在窗内且不溢出、设计尺寸可复原（±2px） |
 | `build\diag_save_pipeline.py` | 诊断 | PASS | 证明 `WM_SETTEXT` + `BM_CLICK` 真的驱动保存链路 |
 | `build\diag_gettext.py` | 诊断 | PASS | 证明 `GetWindowTextW` 跨进程是陈旧缓存、`WM_GETTEXT` 才是实时值 |
 | `build\diag_texture_scan.py` | 诊断 | — | 扫描桌面找有纹理的区域（测马赛克用） |
@@ -692,7 +957,7 @@ Accent   = RGB(232, 160, 0)
 
 ## 5. 历次会话新增/修改的文件
 
-### 5.0 本次会话（7 项需求验收 + 两个真实 BUG 修复）
+### 5.0 上一轮会话（7 项需求验收 + 两个真实 BUG 修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -708,7 +973,7 @@ Accent   = RGB(232, 160, 0)
 | `README.md` | EXE 体积 229 KB → **230 KB**；新增"程序已在运行时再双击 EXE 会弹出设置窗口"；修正文字标注的按键说明（`Enter` 确认 / `Esc` 取消，原文错写成 `Esc` 确认） |
 | `HANDOVER.md` | 本节 + §2.5 陷阱表 + §4 测试资产清单刷新 |
 
-### 5.1 此前会话（UI 遮挡 / 画笔平滑 / F 跟随）
+### 5.1 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
 
 | 文件 | 变更 |
 |---|---|
@@ -723,7 +988,7 @@ Accent   = RGB(232, 160, 0)
 | `build\measure_ui.cs` | **新增**，缩放后真实几何断言 |
 | `build\render_ui.cs` | **新增**，逐页渲染 PNG 供人眼确认 |
 
-### 5.2 更早会话（快捷键冲突 UX）
+### 5.3 更早（快捷键冲突 UX）
 
 | 文件 | 变更 |
 |---|---|
@@ -733,20 +998,58 @@ Accent   = RGB(232, 160, 0)
 | `build\verify_hotkeys.py` | 改用 `PostMessageW`、新增"确认框说明冲突"断言、新增"设置已精确还原"断言、新增 `WM_COMMAND`/`IDYES` |
 | `build\obj\pristine.settings.json` | **新增**，出厂基线快照 |
 
+### 5.4 本轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
+
+| 文件 | 变更 |
+|---|---|
+| `src\PinForm.cs` | **新增（第 11 个源文件）**，629 行。无边框置顶贴图窗口：拖动、滚轮等比缩放（锚点跟随光标）、悬停关闭按钮、右键关闭、`Esc` 关闭、`Ctrl+C` 复制、`Ctrl+S` 另存（PNG/JPG/BMP，JPG/BMP 在 `Color.Black` 上拍平成 `Format24bppRgb`）；`MinScale=0.1f` / `MaxScale=8.0f` / `MinVisible=40`；`_baseSize` 原始尺寸 + `_scale`，`ScaledSizeFor` 每次从原始尺寸重算（**绝不用 `Form.Scale`**）；`Dispose(bool)` 只在 `disposing == true` 时释放 `_image`；`ShowTip` 用 `ToolTip` 代替 `MessageBox`；测试缝 `TestScale`/`TestBaseSize`/`TestImage`/`TestIsClosed`/`IsClosed`/`TestSetScale`/`TestWheelZoom`/`TestDragBy` |
+| `src\RegionSelectForm.cs` | `enum RegionAction` 追加 **`PinToDesktop = 3`**（`0/1/2` 不变）；工具条 3 按钮 → **4 按钮**（`_btnPin`），标签 `贴图 (Enter)` / `贴图 (P)`；`OnKeyDown` 增加裸 `P`（**放在 `Ctrl` 分支之后**，避免遮蔽将来的 `Ctrl+P`）；`OnMouseDown` 命中 `_btnPin`；`DrawToolbar` 的强调色跟随 `_defaultAction`。另含上一轮遗留的 DPI 化改造：`DpiScale()` / `BtnFont()` / `BtnInnerPad` / `BtnMinWidth` / `LayoutToolbar()` 三步收缩（长标签 → 短标签 → 等比缩小 → 等宽兜底）、`_btnLabels` / `_btnShrunk` 供探针量真实字串 |
+| `src\AppContext2.cs` | 托盘新增 **区域截图并钉在桌面**（`RegionScreenshot(RegionAction.PinToDesktop)`）；`_pins` 列表 + `PinScreenshot()` + `PinFormClosed()` + **`CloseAllPins()`**（`ToArray()` 快照遍历，`Quit()` 与 `Dispose(bool)` 都调用）；**`OverlayKeyDown` 最前面加 `if (_overlay.IsEditingText) return;`**（打字抢键 BUG 的修复点）；`ReportHotkeyProblems()` + `_failedHotkeys`；`SettingsStore.Save` 返回值检查 → 气球提示"设置保存失败"；`CopyToClipboard` 的暂存位图改用 `using` |
+| `src\OverlayForm.cs` | `MaxStrokePoints = 20000` 上限 + `MinSampleDist = 1.5f` 抖动去重；`DenseEntry` / `_denseCache` / `DensifiedFor()` / `InvalidateDensifyCache()` 渲染期缓存；`ReleaseBrushPointer()` 修 GDI 泄漏；`ProcessCmdKey` 里 `_textEditor != null` 时放行 `Tab`（否则 `_tabHeld` 闩死，下一次拖动变椭圆）；`DrawMosaic` 的 `raw` 位图提升到 `finally` 释放；`StartScrollFollow` 检查 `SetExcludedFromCapture` 返回值 |
+| `src\SettingsForm.cs` | `FormBorderStyle` → **`Sizable`** + `MaximizeBox` / `MinimizeBox`；**新增 `ApplyMinimumSize()`**（`MinClientWidth = 560` / `MinClientHeight = 460` × DPI + 非客户区边框）；`ScaleSize()`；`OnResize` → `LayoutFooter()` + `RefreshScrollExtents()`（`_ready` 门控）；`DialogWidth` 1180 / `DialogHeight` 830 |
+| `src\SettingsStore.cs` | `Save()` 改为**原子写**：先写 `.tmp`，再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`），失败删 tmp 并返回 `false` |
+| `src\Config.cs` | `Clamp()` 里 **`ScreenshotFormat` 白名单**（去空白 / 去前导 `.` / 小写 / `jpeg → jpg` / 只允许 `png`-`jpg`-`bmp`，否则回退 `png`）；空白单键字段用 `new Settings()` 的出厂值补回 |
+| `src\Shell.cs` | `IconFromBytes` / `GenerateFallback` 里的 `Icon.FromHandle(...)` 改为 `Clone()` + `finally { DestroyIcon(h); }` |
+| `src\Program.cs` | `ReportCrash()` 在弹框前遍历 `Application.OpenForms` 逐个 `TopMost = false`，并用 `MessageBoxOptions.DefaultDesktopOnly` |
+| `build\run_probes.ps1` | 探针数 12 → **14**（加入 `pin_probe` / `typing_probe`）；`$srcs` 加入 `src\PinForm.cs` |
+| `build\pin_probe.cs` | **新增**，19,850 bytes。见 §1.5.4 末（57 条断言覆盖面） |
+| `build\typing_probe.cs` | **新增**，11,435 bytes。驱动 `Keys.L/P/O/E/A/B/D1/M/R/T/F/D0` + `Tab` + 真 `WM_CHAR` |
+| `build\verify_resize.py` | **新增**，6,596 bytes / 206 行，跨进程 9 项断言真实 EXE 的窗口样式与页脚布局 |
+| `build\measure_toolbar.cs` | **新增**，量框选工具条 4 个按钮的真实标签/宽度/是否收缩 |
+| `build\render_pin.cs` | **新增**，渲染贴图窗口 PNG 供人眼确认 |
+| `build\capture_new_features.py` | **新增**，跨进程截图本轮四个新界面（`build\shots\20_settings_min.png` / `21_settings_wide.png` 等） |
+| `README.md` | EXE 体积 230 KB → **241 KB**；新增 **贴图** 章节 + 托盘项 + 设置页"窗口大小可以自己调" + 4 条 FAQ；源码结构表 10 → **11** 行；探针数 9 → **14**；注明打字时单键命令会让位给输入框 |
+| `HANDOVER.md` | **本节 + §1.5（四条改动的根因/改法/证据 + 12 项审计表）+ §5.3/§5.4 编号调整 + §4 测试清单刷新 + 头部版本信息** |
+
+> 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
+
 ---
 
 ## 6. 建议的工作顺序
 
-**§2.1–§2.4 已完成。剩下的是 §2.5 的收尾工作**，建议顺序：
+**§2.1–§2.4 已完成，§2.5 的收尾工作也已完成**（`README.md` 重写、`e2e_test.py`、
+`verify_upgrade.py`、`check_tray.py` 全部转绿，见 §2.5 与 §1.5）。
+本节保留下来的是**当时的建议顺序**，作为历史记录；当前**没有已知的未完成缺陷**。
+
+历史建议顺序（均已执行）：
 
 1. **重写 `README.md`** —— 覆盖区域截图、复制、文字/马赛克/聚光灯、修饰键、
-   画笔光标、跟随滚动；然后跑 `verify_readme.py`。
-2. **修 `e2e_test.py`** —— 它仍在断言 `Ctrl+S` 打开"另存为"对话框，现在 `Ctrl+S` 是区域截图。
-3. **重写或删除 `verify_upgrade.py`** —— 目前完全不可用。
-4. **查清 `check_tray.py` 为什么没有汇总行** —— 是脚本问题还是托盘逻辑问题。
+   画笔光标、跟随滚动、**贴图**；然后跑 `verify_readme.py`。→ 已完成，**7/7 PASS**。
+2. **修 `e2e_test.py`** —— 它当时仍在断言 `Ctrl+S` 打开"另存为"对话框，现在 `Ctrl+S` 是区域截图。
+   → 已按新语义断言，**27/27 PASS**。
+3. **重写或删除 `verify_upgrade.py`** —— 当时完全不可用。→ 已修复，**26/26 PASS**。
+4. **查清 `check_tray.py` 为什么没有汇总行** —— 是脚本问题。→ 已重写，**6/6 PASS, exit 0**。
 5. **补断言**：马赛克/聚光灯/文字是否真的烙进保存的 PNG
-   （`OverlayForm.RenderComposite`），而不只是画在 overlay 上。
-6. **重跑 `verify_ui.py` / `capture_ui.py`** —— UI 改动后必须重跑。
+   （`OverlayForm.RenderComposite`），而不只是画在 overlay 上。→ 已覆盖。
+6. **重跑 `verify_ui.py` / `capture_ui.py`** —— UI 改动后必须重跑。→ 已重跑，**81/81 PASS**。
+
+**下一轮的候选（都不是缺陷，按价值排序）**：
+
+- **贴图的进一步能力**：目前只有整张贴图，没有"复制贴图文字/取色/再次框选"。
+  若要做，注意 §1.5.1 里"`PinForm` 拥有位图 + `ApplyScale` 从 `_baseSize` 重算"两条契约。
+- **设置窗口的 reflow**：现在拉大只多背景。要做真正的响应式布局，
+  必须先把"卡片宽度 = `780 × DPI`"的断言改掉，并且**绝不能**在 `OnResize` 里调 `Scale()`。
+- **多显示器不同 DPI**：见下面的 `DpiChanged` 说明。
 
 **可选（价值中等）**：让 `ApplyDpiScale()` 响应 `DpiChanged`，
 即把窗口拖到不同 DPI 的显示器时重新缩放。当前只在构造时缩放一次，
@@ -758,8 +1061,9 @@ Accent   = RGB(232, 160, 0)
 ### 每一步完成后
 
 - 重新构建（**先删旧 exe** → `build.ps1`）；
-- 跑 `build\run_probes.ps1`（全套 12 个探针）；
-- 若动了 UI，再跑 `render_ui.cs` 并**逐页看图**；
+- 跑 `build\run_probes.ps1`（全套 **14** 个探针）；
+- 若动了 UI，再跑 `render_ui.cs` / `render_pin.cs` 并**逐页看图**；
+- 若动了设置窗口的窗口样式或页脚，再跑 `verify_resize.py`；
 - 确认 `dist\ScreenPen.settings.json` 仍是 49 键出厂值
   （对照 `build\obj\pristine.settings.json`）。
 

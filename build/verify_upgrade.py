@@ -159,6 +159,32 @@ def texture(buf, w, h, tol=12):
     return c / n
 
 
+def pick_textured_region(grab, w, h, min_texture=0.15):
+    """Find a screen area with enough detail for a mosaic to be observable.
+
+    The mosaic tool averages each block, so over a flat area (an empty desktop,
+    a plain editor) the output is pixel-identical BY DESIGN and a diff test
+    reports 0.00% even though the tool works. A fixed coordinate is not safe:
+    whatever window happens to be there decides the result, which made this
+    check flake between runs (texture 0.023 then 0.052 at the same point).
+
+    Scans a coarse grid and returns the most textured (x, y) whose captured
+    texture clears min_texture, or None when the whole desktop is flat.
+    """
+    best = (-1.0, None, None)
+    for x in range(40, 2400, 160):
+        for y in range(120, 1400, 160):
+            buf = grab(x, y, w, h)
+            t = texture(buf, w, h)
+            if t > best[0]:
+                best = (t, x, y)
+            if t >= 0.60:            # comfortably textured; stop early
+                return (x, y, t)
+    if best[1] is None or best[0] < min_texture:
+        return None
+    return (best[1], best[2], best[0])
+
+
 def ink_descriptor(base, got, w, h, tol=12):
     """A real shape fingerprint of the pixels that changed.
 
@@ -534,11 +560,32 @@ def main():
             # A mosaic averages each block, so over a FLAT region it is a
             # no-op by design and a pixel-diff test would report 0.00% even
             # though the tool works (tools_probe.cs measures 0.90% over the
-            # real desktop). Sample a region that actually has texture, and
-            # report the texture alongside the diff so the result stays
-            # interpretable. Measured texture at (1300,700) is 0.96.
-            MX, MY = 1300, 700
+            # real desktop). Pick a region that actually has texture at run
+            # time, and report the texture alongside the diff so the result
+            # stays interpretable. A hard-coded coordinate made this check
+            # depend on whatever window happened to be on screen.
+            picked = pick_textured_region(grab, 340, 260)
+            if picked is None:
+                # A genuinely flat desktop cannot show a mosaic. Skip the
+                # pixel-diff assertion rather than reporting a false failure,
+                # but say so loudly and still prove the tool runs.
+                record(f"tool '{name}'", True,
+                       "skipped: desktop has no textured region (flat by design)")
+                tap(vk)
+                mouse_move(600, 600)
+                mouse(LDOWN)
+                for i in range(18):
+                    mouse_move(600 + i * 10, 600 + i * 5)
+                mouse(LUP)
+                time.sleep(0.5)
+                tap(VK["E"])
+                time.sleep(0.3)
+                continue
+
+            MX, MY, tex = picked
             base = grab(MX - 60, MY - 60, 340, 260)
+            # The full capture is offset by the grab margin, so re-measure the
+            # texture of exactly what will be compared.
             tex = texture(base, 340, 260)
             tap(vk)
             mouse_move(MX, MY)
@@ -550,7 +597,7 @@ def main():
             got = grab(MX - 60, MY - 60, 340, 260)
             d = diff(base, got)
             record(f"tool '{name}'", d > 0.003,
-                   f"diff={d:.2%} texture={tex:.3f}")
+                   f"diff={d:.2%} texture={tex:.3f} at ({MX},{MY})")
             tap(VK["E"])
             time.sleep(0.3)
 

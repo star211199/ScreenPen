@@ -7,6 +7,11 @@ build/obj/
 # by build\capture_ui.py / render_ui.cs and are pure test fixtures.
 build/shots/
 
+# Ad-hoc captures from build\capture_new_features.py. Deliberately NOT
+# build/shots/ (that name is globbed as a fixture set by verify_ui.py, which
+# then reports size mismatches against these differently-sized images).
+build/featshots/
+
 # Ad-hoc screenshots produced by the e2e run.
 build/testshots/
 

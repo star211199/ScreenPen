@@ -59,7 +59,24 @@ namespace ScreenPen
 
         // ---- toolbar geometry -------------------------------------------------
         Rectangle _btnSave, _btnCopy, _btnPin, _btnCancel;
+
+        // Authored at 100% scaling. A fixed 84 px button cannot hold
+        // "复制 (Ctrl+C)" once the font renders at 200%, so every one of these is
+        // multiplied by the window DPI and the width is additionally floored at
+        // the measured text width. Without that the toolbar silently clipped its
+        // own labels on any high-DPI display.
         const int BtnW = 84, BtnH = 32, BtnPad = 8;
+        const int BtnInnerPad = 10;
+        const int BtnMinWidth = 46;
+
+        Font _fontBtn;
+        Font _fontBtnBold;
+
+        // The labels the toolbar is currently painting. Recorded by
+        // LayoutToolbar so a test can measure the real strings and widths
+        // instead of re-deriving (and possibly mis-deriving) the same decision.
+        string[] _btnLabels = new string[4];
+        bool _btnShrunk;
 
         static readonly Color Accent = Color.FromArgb(255, 232, 160, 0);
         static readonly Color PanelBack = Color.FromArgb(238, 24, 26, 32);
@@ -229,39 +246,129 @@ namespace ScreenPen
             }
         }
 
+        /// <summary>
+        /// Current device-pixels-per-96-DPI for this window, computed from the
+        /// live handle so it is correct on a per-monitor-DPI setup and does not
+        /// depend on the process awareness context having been set.
+        /// </summary>
+        float DpiScale()
+        {
+            float s = 1f;
+            try
+            {
+                using (Graphics g = CreateGraphics())
+                    s = g.DpiX / 96f;
+            }
+            catch
+            {
+            }
+            if (s <= 0.1f || s > 8f) s = 1f;
+            return s;
+        }
+
+        Font BtnFont(bool bold)
+        {
+            // Point sizes already scale with the monitor DPI once the process is
+            // DPI-aware, so no manual multiplication is applied here: only the
+            // pixel geometry in LayoutToolbar needs the DpiScale factor.
+            if (_fontBtn == null)
+            {
+                _fontBtn = new Font("Microsoft YaHei UI", 8.6f);
+                _fontBtnBold = new Font("Microsoft YaHei UI", 8.6f, FontStyle.Bold);
+            }
+            return bold ? _fontBtnBold : _fontBtn;
+        }
+
+        int MeasureLabel(string text, bool bold)
+        {
+            int w = TextRenderer.MeasureText(text, BtnFont(bold),
+                new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width;
+            return w + BtnInnerPad * 2;
+        }
+
         void LayoutToolbar()
         {
             // Place the toolbar below-right of the selection, flipping when it
             // would fall off-screen. The absolute positions are needed both for
             // painting and hit-testing, so they are computed once here.
             //
-            // The row is right-aligned to the selection and now holds four
-            // buttons (保存 / 复制 / 贴图 / 取消). Arithmetic: the group is
-            // BtnPad + n*btnW + n*BtnPad wide (one pad inside each edge), so
-            // n = 4 gives 4*btnW + 5*BtnPad and the last button's right edge
-            // lands BtnPad short of x + totalW, leaving the outer 6px margin
-            // intact. On a very narrow desktop the widths shrink together so the
-            // row still fits instead of running off the left edge.
-            int btnW = BtnW;
-            int maxRow = ClientSize.Width - 12;
-            while (btnW > 40 && btnW * 4 + BtnPad * 5 > maxRow) btnW--;
+            // The row is right-aligned to the selection and holds four buttons
+            // (保存 / 复制 / 贴图 / 取消). Each button is wide enough for its own
+            // label, so the same row works at 100% and at 200% scaling, and on a
+            // narrow desktop the whole row shrinks by dropping the keyboard hint
+            // before it is ever allowed to run off the edge.
+            int pad = Math.Max(4, (int)Math.Round(BtnPad * DpiScale()));
+            int btnH = Math.Max(18, (int)Math.Round(BtnH * DpiScale()));
 
-            int totalW = btnW * 4 + BtnPad * 5;
-            int totalH = BtnH + BtnPad * 2;
+            string[] labels = new string[] {
+                SaveLabel(), CopyLabel(), PinLabel(), "取消 (Esc)"
+            };
+            string[] shorts = new string[] { "保存", "复制", "贴图", "取消" };
+
+            int maxRow = ClientSize.Width - 12 - pad * 2;
+            int[] widths = new int[4];
+            int widest = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                widths[i] = Math.Max(BtnMinWidth, MeasureLabel(labels[i], i == 2));
+                if (widths[i] > widest) widest = widths[i];
+            }
+
+            int total = 0;
+            for (int i = 0; i < 4; i++) total += widths[i];
+
+            // Step 1: if the row does not fit, retry with the short labels.
+            bool shrunk = false;
+            if (total + pad * 4 > maxRow)
+            {
+                for (int i = 0; i < 4; i++)
+                    widths[i] = Math.Max(BtnMinWidth, MeasureLabel(shorts[i], i == 2));
+                labels = shorts;
+                shrunk = true;
+            }
+
+            // Step 2: scale every button down together so the row still fits.
+            total = 0;
+            for (int i = 0; i < 4; i++) total += widths[i];
+            int avail = maxRow - pad * 4;
+            if (total > avail && total > 0 && avail > 0)
+            {
+                int shrink = Math.Max(BtnMinWidth,
+                    (int)Math.Floor(widest * (double)avail / total));
+                for (int i = 0; i < 4; i++) widths[i] = Math.Min(widths[i], shrink);
+                shrunk = true;
+            }
+
+            // Step 3: even that can overflow on a tiny window; as a last resort
+            // make every button equal so the arithmetic still lands on screen.
+            total = 0;
+            for (int i = 0; i < 4; i++) total += widths[i];
+            if (total + pad * 4 > maxRow)
+            {
+                int each = Math.Max(1, (maxRow - pad * 4) / 4);
+                for (int i = 0; i < 4; i++) widths[i] = each;
+            }
+
+            total = 0;
+            for (int i = 0; i < 4; i++) total += widths[i];
+            int totalW = total + pad * 4;
+            int totalH = btnH + pad * 2;
 
             int x = _selection.Right - totalW;
             int y = _selection.Bottom + 10;
             if (y + totalH > ClientSize.Height - 6) y = _selection.Top - totalH - 10;
             if (y < 6) y = Math.Min(ClientSize.Height - totalH - 6, _selection.Bottom + 10);
             if (y < 6) y = 6;                       // window shorter than the toolbar
-            if (x < 6) x = 6;
             if (x + totalW > ClientSize.Width - 6) x = ClientSize.Width - totalW - 6;
             if (x < 6) x = 6;                       // even the shrunk row may not fit
 
-            _btnSave = new Rectangle(x + BtnPad, y + BtnPad, btnW, BtnH);
-            _btnCopy = new Rectangle(_btnSave.Right + BtnPad, y + BtnPad, btnW, BtnH);
-            _btnPin = new Rectangle(_btnCopy.Right + BtnPad, y + BtnPad, btnW, BtnH);
-            _btnCancel = new Rectangle(_btnPin.Right + BtnPad, y + BtnPad, btnW, BtnH);
+            _btnSave = new Rectangle(x + pad, y + pad, widths[0], btnH);
+            _btnCopy = new Rectangle(_btnSave.Right + pad, y + pad, widths[1], btnH);
+            _btnPin = new Rectangle(_btnCopy.Right + pad, y + pad, widths[2], btnH);
+            _btnCancel = new Rectangle(_btnPin.Right + pad, y + pad, widths[3], btnH);
+
+            _btnLabels = labels;
+            _btnShrunk = shrunk;
         }
 
         void DrawToolbar(Graphics g)
@@ -269,7 +376,7 @@ namespace ScreenPen
             Rectangle bounds = Rectangle.Union(
                 Rectangle.Union(_btnSave, _btnCopy),
                 Rectangle.Union(_btnPin, _btnCancel));
-            bounds.Inflate(BtnPad, BtnPad);
+            bounds.Inflate(ToolbarPad(), ToolbarPad());
 
             using (GraphicsPath path = OverlayForm.RoundRect(
                        new RectangleF(bounds.X, bounds.Y, bounds.Width, bounds.Height), 9))
@@ -280,13 +387,19 @@ namespace ScreenPen
 
             // The accent marks whichever action Enter commits, so the highlighted
             // button always describes what the keyboard shortcut will do.
-            DrawToolbarButton(g, _btnSave, SaveLabel(),
+            // _btnLabels is exactly what LayoutToolbar sized each button for, so
+            // paint and measurement can never disagree.
+            string[] text = _btnLabels != null && _btnLabels.Length == 4
+                ? _btnLabels
+                : new string[] { SaveLabel(), CopyLabel(), PinLabel(), "取消 (Esc)" };
+
+            DrawToolbarButton(g, _btnSave, text[0],
                               _defaultAction == RegionAction.SaveToFile);
-            DrawToolbarButton(g, _btnCopy, CopyLabel(),
+            DrawToolbarButton(g, _btnCopy, text[1],
                               _defaultAction == RegionAction.CopyToClipboard);
-            DrawToolbarButton(g, _btnPin, PinLabel(),
+            DrawToolbarButton(g, _btnPin, text[2],
                               _defaultAction == RegionAction.PinToDesktop);
-            DrawToolbarButton(g, _btnCancel, "取消 (Esc)", false);
+            DrawToolbarButton(g, _btnCancel, text[3], false);
         }
 
         string SaveLabel()
@@ -318,14 +431,33 @@ namespace ScreenPen
             }
 
             Color fg = primary ? Color.FromArgb(255, 30, 30, 30) : TextMain;
-            using (Font f = new Font("Microsoft YaHei UI", 8.6f, primary ? FontStyle.Bold : FontStyle.Regular))
+            Font f = BtnFont(primary);
+
+            // Centre the glyphs and clip to the button. LayoutToolbar already
+            // sizes every button for its label; the clip is the backstop that
+            // keeps a pathological font from spilling over a neighbour.
+            Rectangle inner = new Rectangle(r.X + 2, r.Y, Math.Max(1, r.Width - 4), r.Height);
             using (StringFormat sf = new StringFormat
             {
                 Alignment = StringAlignment.Center,
-                LineAlignment = StringAlignment.Center
+                LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap
             })
             using (SolidBrush b = new SolidBrush(fg))
-                g.DrawString(text, f, b, r, sf);
+            {
+                Region old = g.Clip;
+                try
+                {
+                    g.SetClip(inner);
+                    g.DrawString(text, f, b, inner, sf);
+                }
+                finally
+                {
+                    g.Clip = old;
+                    old.Dispose();
+                }
+            }
         }
 
         void DrawCrosshair(Graphics g)
@@ -574,6 +706,39 @@ namespace ScreenPen
         public Rectangle CancelButtonBounds { get { return _btnCancel; } }
         /// <summary>The action Enter and double-click commit, for tests.</summary>
         public RegionAction DefaultActionForTest { get { return _defaultAction; } }
+
+        // The exact strings the toolbar paints, so a test can measure text
+        // against the laid-out button width instead of duplicating the labels
+        // (a copy would silently drift from the product).
+        public string SaveLabelForTest { get { return SaveLabel(); } }
+        public string CopyLabelForTest { get { return CopyLabel(); } }
+        public string PinLabelForTest { get { return PinLabel(); } }
+        public string CancelLabelForTest { get { return "取消 (Esc)"; } }
+
+        /// <summary>
+        /// The labels LayoutToolbar actually sized the buttons for, in
+        /// save/copy/pin/cancel order. Null before the first layout.
+        /// </summary>
+        public string[] ToolbarLabelsForTest
+        {
+            get
+            {
+                return _btnLabels == null ? null : (string[])_btnLabels.Clone();
+            }
+        }
+
+        /// <summary>
+        /// True when the row did not fit at its natural width and was shrunk or
+        /// shortened, which is the documented small-desktop fallback. Tests only
+        /// require the labels to fit when this is false.
+        /// </summary>
+        public bool ToolbarShrunkForTest { get { return _btnShrunk; } }
+        /// <summary>Toolbar padding in device pixels at the current DPI.</summary>
+        int ToolbarPad()
+        {
+            return Math.Max(4, (int)Math.Round(BtnPad * DpiScale()));
+        }
+
         /// <summary>Whole toolbar row, so tests can assert it stays on screen.</summary>
         public Rectangle ToolbarBoundsForTest
         {
@@ -582,9 +747,19 @@ namespace ScreenPen
                 Rectangle r = Rectangle.Union(
                     Rectangle.Union(_btnSave, _btnCopy),
                     Rectangle.Union(_btnPin, _btnCancel));
-                r.Inflate(BtnPad, BtnPad);
+                r.Inflate(ToolbarPad(), ToolbarPad());
                 return r;
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_fontBtn != null) { _fontBtn.Dispose(); _fontBtn = null; }
+                if (_fontBtnBold != null) { _fontBtnBold.Dispose(); _fontBtnBold = null; }
+            }
+            base.Dispose(disposing);
         }
     }
 }
