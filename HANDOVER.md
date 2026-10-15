@@ -991,6 +991,7 @@ Accent   = RGB(232, 160, 0)
 | `build\hostile_focus_probe.cs` | 进程内 | **ALL PASS** | **别的进程占着前台时**，overlay 夺回前台、编辑器存活 |
 | `build\pin_probe.cs` | 进程内 | **57 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：贴图。选择器工具条 4 按钮 + `PinToDesktop` 裁切；`PinForm` 几何（缩放上下限、往返无漂移、滚轮 1.12×、光标锚点、拖动、关闭按钮随窗缩、`Esc` 关闭、释放位图）；位图所有权（存活/清引用/幂等/`null` 图）；多贴图互不影响；控制器集成（`PinScreenshot` 跟踪、始终置顶） |
 | `build\typing_probe.cs` | 进程内 | **19 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：打字时单键命令不抢键。命令键清单 `L/P/O/E/A/B/1/M/R/T/F/0`；`Tab` 不闩 `_tabHeld`；`WM_CHAR` 送入后文字成笔画 |
+| `build\measure_toolbar.cs` | 进程内 | **ALL TOOLBAR MEASUREMENTS PASSED**（189 `[PASS]` / 0 `[FAIL]`） | **本轮新增**：5 种桌面宽度（2880/1920/1280/900/640）× 3 种默认动作，用 `TextRenderer.MeasureText` 量**每个按钮自己的标签**是否真的装得下。这是 §1.5.5 工具条标签被裁切的**回归防线**——老探针只查"不重叠、在窗内"，几何全对而文字全被裁 |
 | `build\render_ui.cs` | 诊断 | — | 逐页渲染 PNG → `build\shots\render\`，**供人眼看** |
 | `build\verify_hotkeys.py` | 跨进程 E2E | **20/20 PASS** | 快捷键重绑 + 冲突保存 + 读回校验 |
 | `build\verify_brush.py` | 跨进程 | **17/17 PASS** | 画笔光标 |
