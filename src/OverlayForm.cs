@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
 
@@ -30,6 +31,45 @@ namespace ScreenPen
         // ---- model ----------------------------------------------------------
         readonly List<Stroke> _strokes = new List<Stroke>();
         readonly List<Pin> _pins = new List<Pin>();
+
+        // ---- undo / redo ----------------------------------------------------
+        // The original Undo() just popped the last stroke, which meant a single
+        // Ctrl+Z was the only correction available and an accidental undo was
+        // unrecoverable. ShareX shipped without redo for 4.5 years (issue #4079,
+        // opened 2019, closed 2023) and the reporter's words were "curently there
+        // is no way reverse back" - so this is a real, common complaint.
+        //
+        // Rather than snapshotting the whole document on a timer (what ShareX's
+        // memento pattern does), the mutations here are all append/remove on a
+        // short list, so a simple command stack is exact and cheap:
+        //
+        //   _strokes  = the live document
+        //   _redo     = strokes removed by Undo, newest last, cleared by any new
+        //               edit (standard redo semantics)
+        //
+        // Cleared strokes are retained by reference so Redo can restore the very
+        // same Stroke object - including its densify-cache entry, which is keyed
+        // by reference and would otherwise be rebuilt.
+        readonly List<Stroke> _redo = new List<Stroke>();
+
+        /// <summary>Guards against a redo stack growing without bound.</summary>
+        const int MaxRedoDepth = 200;
+
+        /// <summary>
+        /// High-water mark for step-badge numbering. Never reused while the badge
+        /// that owns the number is still placed, so deleting badge 2 of 5 leaves
+        /// 1,3,4,5 intact rather than renumbering - the behaviour ShareX users
+        /// asked for and did not get.
+        /// </summary>
+        int _stepCounter;
+
+        /// <summary>
+        /// Step-badge counter that survives across overlay activations when
+        /// <see cref="Settings.StepNumberPersistent"/> is on. Static because the
+        /// overlay form is recreated per activation but the numbering is a
+        /// property of the screenshot session.
+        /// </summary>
+        static int _persistentStepCounter;
 
         /// <summary>
         /// Upper bound on the raw samples stored for one freehand stroke.
@@ -186,6 +226,115 @@ namespace ScreenPen
         static readonly Color HudText = Color.FromArgb(255, 240, 242, 245);
         static readonly Color HudAccent = Color.FromArgb(255, 232, 160, 0);
 
+        // ---- HUD chrome -----------------------------------------------------
+        // The status strip and the zoom readout float over live screen content,
+        // so they need a hairline edge and a soft drop shadow to separate from
+        // whatever happens to be behind them (a white web page makes a bare
+        // #101216 rectangle look like it is dissolving). GDI+ has no blur
+        // primitive, so the shadow is a stack of rounded rectangles with very
+        // low alpha, outermost first.
+        //
+        // The shadow bitmap is built once per (size, radius) and cached: it is
+        // drawn on every paint, and rebuilding ~12 rounded-rect fills per frame
+        // while the user drags would cost far more than it is worth.
+        static readonly Color HudEdge = Color.FromArgb(38, 255, 255, 255);
+        const int HudShadowLayers = 10;
+
+        /// <summary>
+        /// How far the soft shadow reaches beyond the panel it belongs to, and
+        /// how far it is pushed down. Callers must leave this much room around
+        /// the panel rect or the shadow will be clipped.
+        /// </summary>
+        public const int PanelShadowSpread = 14;
+        public const int PanelShadowOffsetY = 5;
+
+        Bitmap _hudShadowCache;
+        Size _hudShadowCacheKey = Size.Empty;
+        int _hudShadowCacheRadius = -1;
+        int _hudShadowCacheSpread = -1;
+
+        /// <summary>
+        /// Renders the layered soft shadow for a rounded panel of the given size.
+        /// The caller owns the returned bitmap.
+        ///
+        /// GDI+ has no blur primitive, so a diffuse shadow has to be faked by
+        /// stacking several rounded rectangles with very low alpha, outermost
+        /// and faintest first. Doing that per frame is far too expensive while
+        /// the user is dragging, so every caller caches the result and only
+        /// rebuilds it when the panel size or corner radius changes.
+        /// </summary>
+        public static Bitmap BuildPanelShadow(int w, int h, float radius)
+        {
+            if (w <= 0 || h <= 0) return null;
+
+            int pad = PanelShadowSpread;
+            Bitmap bmp = new Bitmap(w + pad * 2, h + pad * 2 + PanelShadowOffsetY,
+                                    PixelFormat.Format32bppArgb);
+            using (Graphics sg = Graphics.FromImage(bmp))
+            {
+                sg.SmoothingMode = SmoothingMode.AntiAlias;
+                sg.Clear(Color.Transparent);
+
+                for (int i = HudShadowLayers - 1; i >= 0; i--)
+                {
+                    float t = (i + 1f) / HudShadowLayers;   // 1 = outermost
+                    float grow = pad * t;
+                    // Quadratic falloff: alpha rises quickly toward the panel
+                    // edge then flattens, which reads as a diffuse shadow
+                    // rather than a hard halo.
+                    int a = (int)(64 * (1 - t) * (1 - t));
+                    if (a <= 0) continue;
+                    RectangleF r = new RectangleF(
+                        pad - grow, pad - grow + PanelShadowOffsetY * t,
+                        w + grow * 2, h + grow * 2);
+                    using (GraphicsPath p = RoundRect(r, radius + grow))
+                    using (SolidBrush sb = new SolidBrush(Color.FromArgb(a, 0, 0, 0)))
+                        sg.FillPath(sb, p);
+                }
+            }
+            return bmp;
+        }
+
+        /// <summary>
+        /// Draws the shadow stack for a rounded panel, then the panel itself.
+        /// </summary>
+        void DrawHudPanel(Graphics g, RectangleF box, float radius)
+        {
+            int w = (int)Math.Ceiling(box.Width);
+            int h = (int)Math.Ceiling(box.Height);
+            if (w <= 0 || h <= 0) return;
+
+            Size key = new Size(w, h);
+            if (_hudShadowCache == null || _hudShadowCacheKey != key ||
+                _hudShadowCacheRadius != (int)radius ||
+                _hudShadowCacheSpread != PanelShadowSpread)
+            {
+                if (_hudShadowCache != null) { _hudShadowCache.Dispose(); _hudShadowCache = null; }
+                _hudShadowCache = BuildPanelShadow(w, h, radius);
+                if (_hudShadowCache != null)
+                {
+                    _hudShadowCacheKey = key;
+                    _hudShadowCacheRadius = (int)radius;
+                    _hudShadowCacheSpread = PanelShadowSpread;
+                }
+            }
+
+            if (_hudShadowCache != null)
+            {
+                g.DrawImageUnscaled(_hudShadowCache,
+                    (int)Math.Round(box.X) - PanelShadowSpread,
+                    (int)Math.Round(box.Y) - PanelShadowSpread);
+            }
+
+            using (GraphicsPath path = RoundRect(box, radius))
+            {
+                using (SolidBrush b = new SolidBrush(HudBack))
+                    g.FillPath(b, path);
+                using (Pen p = new Pen(HudEdge, 1f))
+                    g.DrawPath(p, path);
+            }
+        }
+
         public OverlayForm(Settings cfg, Func<Size> dpiProvider)
         {
             _cfg = cfg;
@@ -327,6 +476,13 @@ namespace ScreenPen
             _drawing = false;
             _current = null;
 
+            // Seed the badge counter from the persistent mark so numbering can
+            // continue across separate screenshots (1,2,3 ... then 4,5 on the
+            // next one) when the user asked for that. This is the only place
+            // _persistentStepCounter is read: within a session RecomputeStepCounter
+            // takes over so an undone badge can reuse its number.
+            if (_cfg.StepNumberPersistent) _stepCounter = _persistentStepCounter;
+
             Show();
             BringToFront();
 
@@ -429,6 +585,8 @@ namespace ScreenPen
                 case Tool.Text: return "文字";
                 case Tool.Mosaic: return "马赛克";
                 case Tool.Spotlight: return "聚光灯";
+                case Tool.Highlighter: return "荧光笔";
+                case Tool.StepNumber: return "序号";
             }
             return "画笔";
         }
@@ -1170,35 +1328,53 @@ namespace ScreenPen
             }
             else
             {
-                hint = "P/L/R/O/A/T/M/K 切换工具 · Ctrl 矩形 · Tab 椭圆 · Shift 直线 · [ ] 笔宽 · F 跟随";
+                hint = "P/L/R/O/A/T/M/K/H/N 切换工具 · Ctrl+Z 撤销 · Ctrl+Y 重做 · [ ] 笔宽 · F 跟随";
             }
 
             string text = tool + mods + "   " + _strokes.Count + " 笔   " + hint;
 
             using (Font f = new Font("Microsoft YaHei UI", 9.5f))
             {
+                // The text is drawn with DrawString rather than TextRenderer
+                // because the panel is translucent, and GDI's ClearType cannot
+                // blend into an alpha surface (it would punch opaque pixels
+                // through the HUD). AntiAliasGridFit is the best sub-pixel
+                // compromise GDI+ offers for that case.
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
                 SizeF sz = g.MeasureString(text, f);
                 float w = sz.Width + 28;
                 float h = sz.Height + 14;
-                RectangleF box = new RectangleF((ClientSize.Width - w) / 2f,
-                                                ClientSize.Height - h - 22, w, h);
 
-                using (GraphicsPath path = RoundRect(box, 10))
-                using (SolidBrush b = new SolidBrush(HudBack))
-                    g.FillPath(b, path);
+                // Snap the panel to whole pixels. At 200% DPI a fractional origin
+                // makes every glyph in the strip resample and look soft.
+                RectangleF box = new RectangleF(
+                    (float)Math.Round((ClientSize.Width - w) / 2f),
+                    (float)Math.Round(ClientSize.Height - h - 22f),
+                    (float)Math.Round(w), (float)Math.Round(h));
+
+                DrawHudPanel(g, box, 10);
+
                 using (SolidBrush b = new SolidBrush(HudText))
-                    g.DrawString(text, f, b, box.X + 14, box.Y + 7);
+                    g.DrawString(text, f, b,
+                                 (float)Math.Round(box.X + 14f),
+                                 (float)Math.Round(box.Y + 7f));
             }
 
-            // Colour + width swatch, left of the status strip.
+            // Colour + width swatch, left of the status strip. Every swatch gets
+            // a ring: 4 of the 8 default colours fail 3:1 against at least one
+            // HUD surface, so white/black in particular would vanish into the
+            // panel without one.
             Color c = _palette == null || _palette.Length == 0
                 ? Color.Red : _palette[Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex))];
             float r = 9f;
             float cx = 26, cy = ClientSize.Height - 40;
             using (SolidBrush b = new SolidBrush(c))
                 g.FillEllipse(b, cx - r, cy - r, r * 2, r * 2);
-            using (Pen p = new Pen(Color.FromArgb(180, 255, 255, 255), 1.2f))
+            using (Pen p = new Pen(Color.FromArgb(190, 0, 0, 0), 1.4f))
                 g.DrawEllipse(p, cx - r, cy - r, r * 2, r * 2);
+            using (Pen p = new Pen(Color.FromArgb(180, 255, 255, 255), 1.2f))
+                g.DrawEllipse(p, cx - r + 1, cy - r + 1, (r - 1) * 2, (r - 1) * 2);
         }
 
         /// <summary>
@@ -1319,6 +1495,8 @@ namespace ScreenPen
             if (s.Tool == Tool.Mosaic) { DrawMosaic(g, s); return; }
             if (s.Tool == Tool.Spotlight) { DrawSpotlight(g, s); return; }
             if (s.Tool == Tool.Text) { DrawText(g, s); return; }
+            if (s.Tool == Tool.StepNumber) { DrawStepBadge(g, s); return; }
+            if (s.Tool == Tool.Highlighter) { DrawHighlighter(g, s); return; }
 
             if (s.Points.Count == 0) return;
             float w = Math.Max(1f, s.Width * _zoom);
@@ -1386,7 +1564,7 @@ namespace ScreenPen
                                           Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y));
                             break;
                         case Tool.Arrow:
-                            DrawArrow(g, pen, a, b);
+                            DrawArrow(g, pen, a, b, s.Arrow);
                             break;
                     }
                 }
@@ -1602,26 +1780,236 @@ namespace ScreenPen
             }
         }
 
-        static void DrawArrow(Graphics g, Pen pen, PointF a, PointF b)
+        /// <summary>
+        /// Arrow head shared by all three shaft styles. The head is drawn as a
+        /// filled triangle plus two stroked edges, so a thick shaft does not
+        /// leave a notch where it meets the head.
+        /// </summary>
+        static void DrawArrowHead(Graphics g, Pen pen, PointF from, PointF tip)
         {
-            g.DrawLine(pen, a, b);
-            double ang = Math.Atan2(b.Y - a.Y, b.X - a.X);
+            double ang = Math.Atan2(tip.Y - from.Y, tip.X - from.X);
             float head = Math.Max(8f, pen.Width * 3.2f);
             double spread = Math.PI / 7.0;
 
             PointF p1 = new PointF(
-                b.X - (float)(head * Math.Cos(ang - spread)),
-                b.Y - (float)(head * Math.Sin(ang - spread)));
+                tip.X - (float)(head * Math.Cos(ang - spread)),
+                tip.Y - (float)(head * Math.Sin(ang - spread)));
             PointF p2 = new PointF(
-                b.X - (float)(head * Math.Cos(ang + spread)),
-                b.Y - (float)(head * Math.Sin(ang + spread)));
+                tip.X - (float)(head * Math.Cos(ang + spread)),
+                tip.Y - (float)(head * Math.Sin(ang + spread)));
 
             using (SolidBrush brush = new SolidBrush(pen.Color))
             {
-                g.FillPolygon(brush, new[] { b, p1, p2 });
-                // Round the joint so thick arrows don't show a notch.
-                g.DrawLine(pen, p1, b);
-                g.DrawLine(pen, b, p2);
+                g.FillPolygon(brush, new[] { tip, p1, p2 });
+                g.DrawLine(pen, p1, tip);
+                g.DrawLine(pen, tip, p2);
+            }
+        }
+
+        /// <summary>
+        /// Draws an arrow in one of three shaft styles. Straight is the original
+        /// behaviour; Curved bows the shaft through the drag midpoint (a
+        /// quadratic Bezier, so the head still lands exactly on the end point);
+        /// Elbow draws a two-segment right-angle route, which is what you want
+        /// when labelling a UI element off to one side.
+        /// </summary>
+        static void DrawArrow(Graphics g, Pen pen, PointF a, PointF b, ArrowStyle style)
+        {
+            if (style == ArrowStyle.Curved)
+            {
+                // Control point offset perpendicular to the chord, scaled by its
+                // length: a short drag gets a subtle bow, a long one a clear arc.
+                float dx = b.X - a.X, dy = b.Y - a.Y;
+                float len = (float)Math.Sqrt(dx * dx + dy * dy);
+                if (len < 1f) { g.DrawLine(pen, a, b); return; }
+                float bow = Math.Min(len * 0.28f, 120f);
+                PointF mid = new PointF((a.X + b.X) / 2f, (a.Y + b.Y) / 2f);
+                // Perpendicular unit vector, then offset the midpoint.
+                PointF ctrl = new PointF(mid.X - dy / len * bow, mid.Y + dx / len * bow);
+
+                using (GraphicsPath path = new GraphicsPath())
+                {
+                    path.AddBezier(a, ctrl, ctrl, b);
+                    g.DrawPath(pen, path);
+                }
+                // Head tangent comes from the control point, not the chord, or
+                // the head would point visibly off the curve at the tip.
+                DrawArrowHead(g, pen, ctrl, b);
+                return;
+            }
+
+            if (style == ArrowStyle.Elbow)
+            {
+                // Route along the dominant axis first so the bend is a clean
+                // right angle; a tiny endpoint bias avoids a zero-length second
+                // segment when the drag is almost exactly axis-aligned.
+                PointF corner;
+                if (Math.Abs(b.X - a.X) >= Math.Abs(b.Y - a.Y))
+                    corner = new PointF(b.X, a.Y);
+                else
+                    corner = new PointF(a.X, b.Y);
+
+                if (Math.Abs(corner.X - a.X) < 0.5f && Math.Abs(corner.Y - a.Y) < 0.5f)
+                    corner = new PointF(b.X, a.Y);
+
+                g.DrawLine(pen, a, corner);
+                g.DrawLine(pen, corner, b);
+                // The head follows the final segment.
+                DrawArrowHead(g, pen, corner, b);
+                return;
+            }
+
+            g.DrawLine(pen, a, b);
+            DrawArrowHead(g, pen, a, b);
+        }
+
+        /// <summary>
+        /// Draws a marker-pen stroke. Every segment goes through one scratch
+        /// bitmap rather than being stroked directly onto the overlay.
+        ///
+        /// Why: stroking each segment with a semi-transparent pen darkens every
+        /// overlap. Round caps and joins overlap at each vertex, so a fast stroke
+        /// renders as a chain of blotches instead of one even band. Compositing
+        /// the whole polyline into an offscreen surface at full opacity and then
+        /// drawing that surface once at the marker alpha makes overlapping
+        /// passes within a single stroke uniform - which is also what Snipaste's
+        /// marker does (it owns an independent alpha while other pens share one).
+        /// </summary>
+        void DrawHighlighter(Graphics g, Stroke s)
+        {
+            if (s == null || s.Points.Count == 0) return;
+
+            float w = Math.Max(2f, s.Width * _zoom * 3.2f);   // markers are broad
+            int alpha = Math.Max(8, Math.Min(255, s.HighlightAlpha));
+
+            if (s.Points.Count == 1)
+            {
+                PointF one = ScreenToClientF(s.Points[0]);
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(alpha, s.Color)))
+                    g.FillEllipse(b, one.X - w / 2f, one.Y - w / 2f, w, w);
+                return;
+            }
+
+            // Client-space points; the scratch surface only needs to cover the
+            // stroke's own bounding box plus the cap radius.
+            PointF[] pts = new PointF[s.Points.Count];
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            for (int i = 0; i < s.Points.Count; i++)
+            {
+                PointF p = ScreenToClientF(s.Points[i]);
+                pts[i] = p;
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+
+            float pad = w + 2f;
+            RectangleF box = RectangleF.FromLTRB(minX - pad, minY - pad, maxX + pad, maxY + pad);
+            int bw = (int)Math.Ceiling(box.Width);
+            int bh = (int)Math.Ceiling(box.Height);
+            // A pathologically large stroke would allocate a huge bitmap; fall
+            // back to direct stroking rather than risking an OOM.
+            if (bw <= 0 || bh <= 0 || (long)bw * bh > 32L * 1024 * 1024)
+            {
+                using (Pen pen = new Pen(Color.FromArgb(alpha, s.Color), w))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.LineJoin = LineJoin.Round;
+                    g.DrawLines(pen, pts);
+                }
+                return;
+            }
+
+            Bitmap scratch = null;
+            try
+            {
+                scratch = new Bitmap(bw, bh, PixelFormat.Format32bppArgb);
+                using (Graphics sg = Graphics.FromImage(scratch))
+                {
+                    sg.SmoothingMode = SmoothingMode.AntiAlias;
+                    // Opaque colour on a transparent surface: the alpha is
+                    // applied once, when the surface is composited below.
+                    using (Pen pen = new Pen(Color.FromArgb(255, s.Color), w))
+                    {
+                        pen.StartCap = LineCap.Round;
+                        pen.EndCap = LineCap.Round;
+                        pen.LineJoin = LineJoin.Round;
+
+                        PointF[] local = new PointF[pts.Length];
+                        for (int i = 0; i < pts.Length; i++)
+                            local[i] = new PointF(pts[i].X - box.X, pts[i].Y - box.Y);
+
+                        if (_cfg.SmoothLines && local.Length >= 3)
+                            sg.DrawCurve(pen, local, SmoothTension);
+                        else
+                            sg.DrawLines(pen, local);
+                    }
+                }
+
+                using (ImageAttributes ia = new ImageAttributes())
+                {
+                    // ColourMatrix scales alpha only, so the marker tint and the
+                    // independent alpha stay separate knobs.
+                    float f = alpha / 255f;
+                    ColorMatrix cm = new ColorMatrix();
+                    cm.Matrix00 = 1f; cm.Matrix11 = 1f;
+                    cm.Matrix22 = 1f; cm.Matrix33 = f;
+                    cm.Matrix44 = 1f;
+                    ia.SetColorMatrix(cm);
+                    g.DrawImage(scratch,
+                                new Rectangle((int)box.X, (int)box.Y, bw, bh),
+                                0, 0, bw, bh, GraphicsUnit.Pixel, ia);
+                }
+            }
+            finally
+            {
+                if (scratch != null) scratch.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Draws a numbered step badge: a filled disc in the stroke colour with
+        /// the number centred in white, plus a soft dark rim so the badge stays
+        /// legible over both light and dark content.
+        ///
+        /// The number is stored on the stroke (StepIndex) rather than derived
+        /// from its position in the list, so removing an earlier badge does not
+        /// silently renumber the rest - the behaviour ShareX users asked for in
+        /// issue #8033 and did not get.
+        /// </summary>
+        void DrawStepBadge(Graphics g, Stroke s)
+        {
+            if (s == null || s.Points.Count == 0) return;
+            PointF c = ScreenToClientF(s.Points[0]);
+            float r = Math.Max(6f, _cfg.StepBadgeSize * _zoom / 2f);
+
+            // Contrast rim: the same colour darkened, not pure black, so a
+            // yellow badge does not get a muddy grey outline.
+            Color rim = Color.FromArgb(255,
+                Math.Max(0, (int)(s.Color.R * 0.55f)),
+                Math.Max(0, (int)(s.Color.G * 0.55f)),
+                Math.Max(0, (int)(s.Color.B * 0.55f)));
+
+            using (SolidBrush b = new SolidBrush(s.Color))
+                g.FillEllipse(b, c.X - r, c.Y - r, r * 2, r * 2);
+            using (Pen p = new Pen(rim, Math.Max(1f, r * 0.14f)))
+                g.DrawEllipse(p, c.X - r, c.Y - r, r * 2, r * 2);
+
+            string num = s.StepIndex.ToString(CultureInfo.InvariantCulture);
+            // The digit has to shrink with the badge, and a fixed font would
+            // overflow once the user zooms out. Scaling the em size by r keeps
+            // the glyph proportional at every zoom level.
+            float em = Math.Max(6f, r * 1.15f);
+            using (Font f = new Font("Microsoft YaHei UI", em, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (SolidBrush tb = new SolidBrush(Color.White))
+            {
+                StringFormat sf = StringFormat.GenericTypographic;
+                sf.Alignment = StringAlignment.Center;
+                sf.LineAlignment = StringAlignment.Center;
+                g.DrawString(num, f, tb, new RectangleF(c.X - r, c.Y - r, r * 2, r * 2), sf);
             }
         }
 
@@ -1633,22 +2021,26 @@ namespace ScreenPen
             using (Font f = new Font("Microsoft YaHei UI", 10f))
             using (Font fb = new Font("Microsoft YaHei UI", 16f, FontStyle.Bold))
             {
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
                 SizeF sz = g.MeasureString(zoomText, fb);
                 SizeF sh = g.MeasureString(hint, f);
                 float w = Math.Max(sz.Width, sh.Width) + 36;
                 float h = sz.Height + sh.Height + 30;
-                RectangleF box = new RectangleF((ClientSize.Width - w) / 2f, 18, w, h);
+                RectangleF box = new RectangleF(
+                    (float)Math.Round((ClientSize.Width - w) / 2f), 18f,
+                    (float)Math.Round(w), (float)Math.Round(h));
 
-                using (GraphicsPath path = RoundRect(box, 12))
-                using (SolidBrush b = new SolidBrush(HudBack))
-                    g.FillPath(b, path);
+                DrawHudPanel(g, box, 12);
 
                 using (SolidBrush b = new SolidBrush(HudAccent))
                     g.DrawString(zoomText, fb, b,
-                                 box.X + (w - sz.Width) / 2f, box.Y + 8);
+                                 (float)Math.Round(box.X + (w - sz.Width) / 2f),
+                                 (float)Math.Round(box.Y + 8f));
                 using (SolidBrush b = new SolidBrush(HudText))
                     g.DrawString(hint, f, b,
-                                 box.X + (w - sh.Width) / 2f, box.Y + 12 + sz.Height);
+                                 (float)Math.Round(box.X + (w - sh.Width) / 2f),
+                                 (float)Math.Round(box.Y + 12f + sz.Height));
             }
         }
 
@@ -1678,6 +2070,44 @@ namespace ScreenPen
         // =====================================================================
         //  Mouse
         // =====================================================================
+
+        /// <summary>
+        /// Builds a new stroke for <paramref name="use"/> with every per-tool
+        /// field already populated. Centralised so the mouse path and the test
+        /// hooks cannot drift apart - a divergence there would let a probe pass
+        /// while the real UI behaved differently.
+        /// </summary>
+        Stroke MakeStroke(Tool use)
+        {
+            Stroke s = new Stroke();
+            s.Tool = use;
+            s.Color = _palette[Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex))];
+            s.Width = _penWidth;
+            s.FontSize = _cfg.TextSize;
+            s.BlockSize = _cfg.MosaicBlock;
+            s.HighlightAlpha = _cfg.HighlighterAlpha;
+            s.Arrow = (ArrowStyle)Math.Max(0, Math.Min(2, _cfg.ArrowStyleIndex));
+            return s;
+        }
+
+        /// <summary>
+        /// Places a numbered badge at a point. Badges are a single click, not a
+        /// drag, so they commit immediately rather than waiting for mouse-up.
+        /// </summary>
+        public void PlaceStepBadge(PointF screenPt)
+        {
+            Stroke s = MakeStroke(Tool.StepNumber);
+            // The counter is the high-water mark, so a badge deleted out of the
+            // middle does not free its number for reuse - two badges showing "2"
+            // would be worse than a gap. Undo() pulls the mark back instead.
+            _stepCounter++;
+            s.StepIndex = _stepCounter;
+            if (_cfg.StepNumberPersistent) _persistentStepCounter = _stepCounter;
+            s.Points.Add(screenPt);
+            _strokes.Add(s);
+            NoteEdit();
+            Invalidate();
+        }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
@@ -1712,15 +2142,15 @@ namespace ScreenPen
                 return;
             }
 
-            _drawing = true;
-            _current = new Stroke
+            // A badge is placed on click; there is nothing to drag.
+            if (use == Tool.StepNumber)
             {
-                Tool = use,
-                Color = _palette[Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex))],
-                Width = _penWidth,
-                FontSize = _cfg.TextSize,
-                BlockSize = _cfg.MosaicBlock
-            };
+                PlaceStepBadge(sp);
+                return;
+            }
+
+            _drawing = true;
+            _current = MakeStroke(use);
             _current.Points.Add(sp);
             Invalidate();
         }
@@ -1761,7 +2191,7 @@ namespace ScreenPen
             // raw samples is far more than any real annotation (a mouse emits
             // roughly 100-200 samples/second, so this is several minutes of
             // unbroken drawing) while keeping the per-frame cost bounded.
-            if (_current.Tool == Tool.Pen)
+            if (_current.Tool == Tool.Pen || _current.Tool == Tool.Highlighter)
             {
                 // Drop samples that have barely moved since the last stored one
                 // (see MinSampleDist - raw samples are stored, just fewer of
@@ -1794,7 +2224,7 @@ namespace ScreenPen
             if (!_drawing || _current == null) { _drawing = false; return; }
 
             _drawing = false;
-            if (_current.Points.Count >= 2) _strokes.Add(_current);
+            if (_current.Points.Count >= 2) { _strokes.Add(_current); NoteEdit(); }
             _current = null;
             Invalidate();
         }
@@ -2006,6 +2436,7 @@ namespace ScreenPen
                 {
                     st.Text = text;
                     _strokes.Add(st);
+                    NoteEdit();
                 }
             }
             finally
@@ -2047,15 +2478,99 @@ namespace ScreenPen
         public void Undo()
         {
             if (_strokes.Count == 0) return;
+            Stroke last = _strokes[_strokes.Count - 1];
             _strokes.RemoveAt(_strokes.Count - 1);
+
+            // Only strokes reachable by Redo go on the stack. Pinned snapshots
+            // are excluded because they own a Bitmap: keeping one alive in the
+            // redo stack would defeat the disposal in Clear()/Dispose().
+            if (!last.Pinned)
+            {
+                _redo.Add(last);
+                if (_redo.Count > MaxRedoDepth) _redo.RemoveAt(0);
+            }
+
+            // A badge that is undone must be re-issuable: StepCounter is the
+            // high-water mark, so pulling it back keeps numbering dense. Doing
+            // this only when the popped stroke is the newest badge avoids
+            // renumbering an older badge that is still on screen.
+            if (last.Tool == Tool.StepNumber && last.StepIndex > 0)
+                RecomputeStepCounter();
+
             InvalidateDensifyCache();
             Invalidate();
+        }
+
+        /// <summary>
+        /// Records that the document changed by user action. Standard redo
+        /// semantics: once you draw something new, the branch you had undone is
+        /// no longer reachable. Every commit path must call this, otherwise a
+        /// stale redo entry can resurrect a stroke on top of newer content.
+        /// </summary>
+        void NoteEdit()
+        {
+            if (_redo.Count > 0) _redo.Clear();
+        }
+
+        /// <summary>Restores the most recently undone stroke, if any.</summary>
+        public void Redo()
+        {
+            if (_redo.Count == 0) return;
+            Stroke s = _redo[_redo.Count - 1];
+            _redo.RemoveAt(_redo.Count - 1);
+            _strokes.Add(s);
+
+            // Keep the badge high-water mark above anything currently placed, so
+            // redoing a badge does not make the next one reuse its number.
+            if (s.Tool == Tool.StepNumber && s.StepIndex > _stepCounter)
+                _stepCounter = s.StepIndex;
+
+            InvalidateDensifyCache();
+            Invalidate();
+        }
+
+        /// <summary>True when there is something to undo.</summary>
+        public bool CanUndo { get { return _strokes.Count > 0; } }
+
+        /// <summary>True when there is something to redo.</summary>
+        public bool CanRedo { get { return _redo.Count > 0; } }
+
+        /// <summary>
+        /// Recomputes the badge counter as the highest number currently placed on
+        /// the canvas. Undoing a badge therefore frees its number for reuse within
+        /// the session instead of leaving a permanent gap.
+        ///
+        /// The redo stack is deliberately NOT counted. A stroke sitting on the
+        /// redo stack has been removed from the canvas, so its number is free
+        /// again; counting it would make the counter jump to 4 after undoing
+        /// badge 3. That is safe because every commit path calls NoteEdit, which
+        /// clears the redo stack, so a number can never be handed out twice
+        /// while the old stroke is still restorable.
+        ///
+        /// Deliberately NOT floored at the persistent mark: reuse within one
+        /// screenshot and continuity across screenshots are different scopes.
+        /// The persistent mark only seeds the counter when a new session starts
+        /// (see ActivateOverlay).
+        /// </summary>
+        void RecomputeStepCounter()
+        {
+            int max = 0;
+            foreach (Stroke s in _strokes)
+                if (s.Tool == Tool.StepNumber && s.StepIndex > max) max = s.StepIndex;
+            _stepCounter = max;
         }
 
         public void Clear()
         {
             CommitTextEditing(false);
             _strokes.Clear();
+            // Clear is undoable in spirit but not in storage: the strokes it
+            // discards would pin their own geometry in the redo stack forever,
+            // and a user who clears wants the canvas empty. Dropping the stack
+            // also keeps "Clear then Ctrl+Z" from resurrecting one lone stroke
+            // out of a cleared canvas, which would look like a bug.
+            _redo.Clear();
+            _stepCounter = 0;
             foreach (Pin p in _pins) if (p.Image != null) p.Image.Dispose();
             _pins.Clear();
             InvalidateDensifyCache();
@@ -2082,12 +2597,19 @@ namespace ScreenPen
         /// <summary>Begins a stroke at a screen point using the current tool.</summary>
         public void TestBeginStroke(PointF screenPt)
         {
-            _current = new Stroke();
-            _current.Tool = EffectiveTool();
-            _current.Color = _palette[Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex))];
-            _current.Width = _penWidth;
-            _current.FontSize = _cfg.TextSize;
-            _current.BlockSize = _cfg.MosaicBlock;
+            Tool use = EffectiveTool();
+            // Mirrors OnMouseDown: a badge is a click, not a drag, so the hook
+            // has to take the same branch or a probe would exercise a path the
+            // real UI never uses.
+            if (use == Tool.StepNumber)
+            {
+                PlaceStepBadge(screenPt);
+                _dragStart = screenPt;
+                _drawing = false;
+                return;
+            }
+
+            _current = MakeStroke(use);
             _current.Points.Add(screenPt);
             _dragStart = screenPt;
             _drawing = true;
@@ -2097,7 +2619,10 @@ namespace ScreenPen
         public void TestExtendStroke(PointF screenPt)
         {
             if (_current == null) return;
-            if (_current.Tool == Tool.Pen) _current.Points.Add(screenPt);
+            // Highlighter accumulates samples exactly like the pen; only the
+            // two-point shape tools replace their point list.
+            if (_current.Tool == Tool.Pen || _current.Tool == Tool.Highlighter)
+                _current.Points.Add(screenPt);
             else
             {
                 _current.Points.Clear();
@@ -2111,7 +2636,10 @@ namespace ScreenPen
         {
             if (_current == null) { _drawing = false; return; }
             if (_current.Points.Count >= 2 && _current.Tool != Tool.Text)
+            {
                 _strokes.Add(_current);
+                NoteEdit();
+            }
             _current = null;
             _drawing = false;
             Invalidate();
@@ -2147,15 +2675,19 @@ namespace ScreenPen
         /// <summary>Number of committed strokes, for end-to-end click tests.</summary>
         public int StrokeCountForTest() { return _strokes.Count; }
 
-        /// <summary>Clears annotations and any in-flight stroke/editor.</summary>
+        /// <summary>
+        /// Clears annotations and any in-flight stroke/editor.
+        ///
+        /// Delegates to <see cref="Clear"/> rather than repeating its body. The
+        /// two had drifted apart: this hook never reset the badge counter or the
+        /// redo stack, so a probe that cleared the canvas between cases saw
+        /// numbering continue from the previous case and reported a false
+        /// failure. Keeping one implementation means a probe cannot pass against
+        /// behaviour the real E key does not have.
+        /// </summary>
         public void ClearForTest()
         {
-            CommitTextEditing(false);
-            _strokes.Clear();
-            _current = null;
-            _drawing = false;
-            InvalidateDensifyCache();
-            Invalidate();
+            Clear();
         }
 
         public void SelectColor(int index)
@@ -2182,6 +2714,37 @@ namespace ScreenPen
         }
 
         public int ColorIndex { get { return _colorIndex; } }
+
+        /// <summary>
+        /// Makes a colour picked off the screen the active drawing colour.
+        ///
+        /// The palette has a fixed size, so rather than appending (which would
+        /// grow the palette every pick and eventually make the swatch strip
+        /// unusable) this overwrites the *current* slot. That keeps the palette
+        /// length stable, keeps the 1-8 shortcuts meaningful, and matches what
+        /// the user just asked for: "draw with this colour".
+        /// </summary>
+        public void SetColorFromPicker(Color c)
+        {
+            if (c.IsEmpty || _palette == null || _palette.Length == 0) return;
+            int i = Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex));
+            // Force opaque: a picked pixel is never transparent, and a
+            // zero-alpha palette entry would draw nothing at all.
+            _palette[i] = Color.FromArgb(255, c.R, c.G, c.B);
+            ReleaseBrushPointer();
+            ApplyCursorForMode();
+            Invalidate();
+        }
+
+        /// <summary>The active colour, for probes and for the HUD.</summary>
+        public Color CurrentColor
+        {
+            get
+            {
+                if (_palette == null || _palette.Length == 0) return Color.Red;
+                return _palette[Math.Max(0, Math.Min(_palette.Length - 1, _colorIndex))];
+            }
+        }
 
         /// <summary>Resets the live-zoom view back to 1:1 and re-centres.</summary>
         public void ResetView()
@@ -2291,6 +2854,7 @@ namespace ScreenPen
                 try { Native.SetExcludedFromCapture(Handle, false); } catch { }
                 if (_backdrop != null) { _backdrop.Dispose(); _backdrop = null; }
                 if (_brushPointer != null) { _brushPointer.Dispose(); _brushPointer = null; }
+                if (_hudShadowCache != null) { _hudShadowCache.Dispose(); _hudShadowCache = null; }
                 // Drop the memo so nothing can outlive the strokes it references.
                 InvalidateDensifyCache();
                 foreach (Pin p in _pins) if (p.Image != null) p.Image.Dispose();

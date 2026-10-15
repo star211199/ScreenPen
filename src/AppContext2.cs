@@ -25,6 +25,8 @@ namespace ScreenPen
         const int HK_ZOOM_IN = 4;
         const int HK_ZOOM_OUT = 5;
         const int HK_COPYSHOT = 6;
+        const int HK_WINDOWSHOT = 7;
+        const int HK_PICKER = 8;
 
         Settings _cfg;
         OverlayForm _overlay;
@@ -163,6 +165,8 @@ namespace ScreenPen
             TryRegister(HK_LIVE, _cfg.LiveZoomKey, "实时缩放");
             TryRegister(HK_SHOT, _cfg.ScreenshotKey, "区域截图");
             TryRegister(HK_COPYSHOT, _cfg.CopyShotKey, "截图并复制");
+            TryRegister(HK_WINDOWSHOT, _cfg.WindowShotKey, "窗口截图");
+            TryRegister(HK_PICKER, _cfg.ColorPickerKey, "取色器");
             TryRegister(HK_ZOOM_IN, _cfg.ZoomInKey, "放大");
             TryRegister(HK_ZOOM_OUT, _cfg.ZoomOutKey, "缩小");
         }
@@ -250,6 +254,8 @@ namespace ScreenPen
                 case HK_LIVE: ToggleOverlay(true); break;
                 case HK_SHOT: RegionScreenshot(RegionAction.SaveToFile); break;
                 case HK_COPYSHOT: RegionScreenshot(RegionAction.CopyToClipboard); break;
+                case HK_WINDOWSHOT: WindowScreenshot(); break;
+                case HK_PICKER: StartColorPicker(); break;
                 case HK_ZOOM_IN:
                     if (_overlay.Visible) _overlay.ZoomBy(120, CursorAtClient());
                     break;
@@ -352,9 +358,20 @@ namespace ScreenPen
             if (e.Control)
             {
                 HotKey undo = HotKey.Parse(_cfg.UndoKey);
+                HotKey redo = HotKey.Parse(_cfg.RedoKey);
                 HotKey save = HotKey.Parse(_cfg.SaveKey);
                 HotKey copy = HotKey.Parse(_cfg.CopyKey);
 
+                // Redo is tested BEFORE undo. Ctrl+Shift+Z is the other common
+                // redo binding, and the undo test below matches a bare
+                // `code == Keys.Z` regardless of Shift - so if undo ran first it
+                // would swallow Ctrl+Shift+Z and redo would be unreachable.
+                if (Matches(redo, code) || (code == Keys.Z && e.Shift))
+                {
+                    _overlay.Redo();
+                    e.Handled = true;
+                    return;
+                }
                 if (Matches(undo, code) || code == Keys.Z)
                 {
                     _overlay.Undo();
@@ -674,6 +691,177 @@ namespace ScreenPen
         }
 
         /// <summary>
+        /// Captures the top-level window under the pointer, saving it.
+        ///
+        /// The window is resolved *before* anything of ours is shown, because
+        /// once an overlay is up the window under the pointer is us. Bounds come
+        /// from Native.WindowBounds, which uses DWMWA_EXTENDED_FRAME_BOUNDS - see
+        /// the comment there for why GetWindowRect is wrong at this DPI.
+        /// </summary>
+        void WindowScreenshot()
+        {
+            IntPtr target = IntPtr.Zero;
+            try
+            {
+                Point cursor = Cursor.Position;
+                IntPtr under = Native.RootWindowAt(cursor);
+                // Refuse to capture our own windows. The overlay and every pin
+                // are excluded, so hovering our own UI cannot produce a
+                // screenshot of the screenshot tool.
+                IntPtr[] mine = OwnWindowHandles();
+                target = Native.IsCapturableWindow(under, mine) ? under : IntPtr.Zero;
+
+                if (target == IntPtr.Zero)
+                {
+                    Balloon("窗口截图", "指针下没有可截取的窗口。", ToolTipIcon.Warning);
+                    return;
+                }
+
+                Rectangle bounds = Native.WindowBounds(target);
+                if (bounds.Width <= 0 || bounds.Height <= 0)
+                {
+                    Balloon("窗口截图", "无法获取窗口尺寸。", ToolTipIcon.Warning);
+                    return;
+                }
+
+                // Hide our overlay for the duration so it cannot land inside the
+                // capture even if the target window overlaps it.
+                bool overlayWasVisible = _overlay.Visible;
+                if (overlayWasVisible) _overlay.Hide();
+
+                Bitmap shot = null;
+                try
+                {
+                    shot = Native.CaptureRegion(bounds);
+                    if (shot == null)
+                    {
+                        Balloon("窗口截图", "无法抓取窗口内容。", ToolTipIcon.Warning);
+                        return;
+                    }
+
+                    string path = ChooseSavePath();
+                    if (path == null) return;
+                    SaveBitmap(shot, path);
+                    Balloon("窗口截图已保存", path, ToolTipIcon.Info);
+                    PlayShotSound();
+                }
+                finally
+                {
+                    if (shot != null) shot.Dispose();
+                    if (overlayWasVisible)
+                    {
+                        try { _overlay.ResumeAfterCapture(); }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Balloon("窗口截图失败", ex.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        /// <summary>Every top-level window this process owns, for self-exclusion.</summary>
+        IntPtr[] OwnWindowHandles()
+        {
+            List<IntPtr> list = new List<IntPtr>();
+            try { if (_overlay != null && _overlay.IsHandleCreated) list.Add(_overlay.Handle); }
+            catch { }
+            // HotkeyWindow is a NativeWindow, not a Control, so it has no
+            // IsHandleCreated; its handle is created in the constructor.
+            try { if (_msgWindow != null) list.Add(_msgWindow.Handle); }
+            catch { }
+            try
+            {
+                foreach (PinForm p in _pins)
+                {
+                    try { if (p != null && p.IsHandleCreated) list.Add(p.Handle); }
+                    catch { }
+                }
+            }
+            catch { }
+            try
+            {
+                if (_settingsForm != null && _settingsForm.IsHandleCreated)
+                    list.Add(_settingsForm.Handle);
+            }
+            catch { }
+            return list.ToArray();
+        }
+
+        /// <summary>
+        /// Colour picker: shows a full-screen frozen backdrop with a magnifier
+        /// loupe; clicking copies the pixel under the pointer and selects it as
+        /// the current pen colour, so "pick then draw" is one gesture.
+        /// </summary>
+        void StartColorPicker()
+        {
+            bool overlayWasVisible = _overlay.Visible;
+            try
+            {
+                Rectangle desktop = Native.VirtualScreen();
+                Bitmap frozen = overlayWasVisible
+                    ? _overlay.RenderComposite(false)
+                    : Native.CaptureRegion(desktop);
+                if (frozen == null)
+                {
+                    Balloon("取色失败", "无法抓取屏幕内容。", ToolTipIcon.Warning);
+                    return;
+                }
+
+                if (overlayWasVisible) _overlay.Hide();
+
+                Color picked;
+                // Ownership of `frozen` transfers to the picker unconditionally:
+                // this method has no other reference to it, so if the form did
+                // not dispose it nothing would.
+                using (ColorPickerForm picker =
+                       new ColorPickerForm(_cfg, desktop, frozen, true))
+                {
+                    picker.ShowDialog();
+                    picked = picker.PickedColor;
+                }
+
+                if (picked.IsEmpty)
+                {
+                    if (overlayWasVisible)
+                    {
+                        try { _overlay.ResumeAfterCapture(); }
+                        catch { }
+                    }
+                    return;
+                }
+
+                // Feed the colour straight into the pen palette's active slot, so
+                // picking a colour and drawing with it is one flow rather than
+                // "copy hex, open settings, paste".
+                _overlay.SetColorFromPicker(picked);
+
+                string hex = Beautifier.FormatColor(picked);
+                try
+                {
+                    Clipboard.SetText(hex);
+                    Balloon("已取色 " + hex,
+                            "颜色已设为当前画笔色，并复制到剪贴板。", ToolTipIcon.Info);
+                }
+                catch
+                {
+                    Balloon("已取色 " + hex, "颜色已设为当前画笔色。", ToolTipIcon.Info);
+                }
+
+                if (overlayWasVisible)
+                {
+                    try { _overlay.ResumeAfterCapture(); }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Balloon("取色失败", ex.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        /// <summary>
         /// Shows a new 贴图 window that takes ownership of <paramref name="bmp"/>,
         /// placed over the region the user just selected.
         ///
@@ -862,7 +1050,36 @@ namespace ScreenPen
             }
         }
 
-        static void SaveBitmap(Bitmap bmp, string path)
+        /// <summary>
+        /// Writes a bitmap to disk, applying the beautifier first when it is
+        /// enabled. An instance method (not static) because the beautifier reads
+        /// the live settings, and the settings object is owned by the context.
+        ///
+        /// If the beautifier fails for any reason the raw screenshot is still
+        /// written: a saved screenshot without the decoration is strictly better
+        /// than an error dialog and no file.
+        /// </summary>
+        void SaveBitmap(Bitmap bmp, string path)
+        {
+            if (_cfg != null && _cfg.BeautifyEnabled)
+            {
+                Bitmap pretty = null;
+                try
+                {
+                    pretty = Beautifier.Render(bmp, _cfg);
+                    if (pretty != null)
+                    {
+                        SaveBitmapRaw(pretty, path);
+                        return;
+                    }
+                }
+                catch { }
+                finally { if (pretty != null) pretty.Dispose(); }
+            }
+            SaveBitmapRaw(bmp, path);
+        }
+
+        static void SaveBitmapRaw(Bitmap bmp, string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();
             ImageFormat fmt = ImageFormat.Png;

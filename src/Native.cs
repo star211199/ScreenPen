@@ -171,6 +171,143 @@ namespace ScreenPen
 
         public const uint GA_ROOT = 2;
 
+        // ---- window capture geometry ----------------------------------------
+
+        public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr,
+                                                       out RECT value, int size);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        /// <summary>
+        /// Physical-pixel bounds of a window, or <see cref="Rectangle.Empty"/>.
+        ///
+        /// GetWindowRect alone is wrong here on two counts, both measured on this
+        /// machine at 200% DPI:
+        ///   1. It returns DPI-VIRTUALISED coordinates, so the rect is half the
+        ///      real size and the captured image lands in the wrong place.
+        ///   2. It includes the invisible resize border DWM draws around a
+        ///      window, so the capture has a transparent margin - measured as
+        ///      {X=-7,Y=-7,W=1453,H=865} versus the real {0,0,2880,1704}.
+        /// DWMWA_EXTENDED_FRAME_BOUNDS returns the physical, border-excluded
+        /// rect, which is what a window screenshot needs. GetWindowRect is kept
+        /// as a fallback for the rare window DWM refuses to describe (and for
+        /// pre-Vista composition-off cases), because a slightly-wrong capture
+        /// beats no capture.
+        /// </summary>
+        public static Rectangle WindowBounds(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return Rectangle.Empty;
+
+            RECT r;
+            try
+            {
+                if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                          out r, Marshal.SizeOf(typeof(RECT))) == 0)
+                {
+                    Rectangle d = FromRect(r);
+                    if (d.Width > 0 && d.Height > 0) return d;
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (GetWindowRect(hwnd, out r))
+                {
+                    Rectangle g = FromRect(r);
+                    if (g.Width > 0 && g.Height > 0) return g;
+                }
+            }
+            catch { }
+
+            return Rectangle.Empty;
+        }
+
+        static Rectangle FromRect(RECT r)
+        {
+            return Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+        }
+
+        /// <summary>
+        /// Top-level window under a screen point, or IntPtr.Zero. Walks up to the
+        /// root owner so a click on a child control yields the window a user
+        /// would expect to capture rather than a button or a static.
+        /// </summary>
+        public static IntPtr RootWindowAt(Point screenPoint)
+        {
+            try
+            {
+                IntPtr h = WindowFromPoint(new POINT(screenPoint.X, screenPoint.Y));
+                if (h == IntPtr.Zero) return IntPtr.Zero;
+                IntPtr root = GetAncestor(h, GA_ROOT);
+                return root != IntPtr.Zero ? root : h;
+            }
+            catch { return IntPtr.Zero; }
+        }
+
+        /// <summary>
+        /// True when the window is a plausible capture target: visible, not
+        /// minimised, and not one of our own overlay/pin windows. Without the
+        /// self-check, activating the region picker from the tray and then
+        /// hitting the window-shot hotkey would "capture" our own overlay.
+        /// </summary>
+        public static bool IsCapturableWindow(IntPtr hwnd, IntPtr[] exclude)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            try
+            {
+                if (!IsWindowVisible(hwnd)) return false;
+                if (IsIconic(hwnd)) return false;
+                if (exclude != null)
+                {
+                    for (int i = 0; i < exclude.Length; i++)
+                        if (exclude[i] != IntPtr.Zero && exclude[i] == hwnd) return false;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Reads one physical screen pixel. Used by the colour picker, which must
+        /// report the pixel the user actually sees rather than a DPI-scaled
+        /// approximation.
+        /// </summary>
+        public static Color PixelAt(Point screenPoint)
+        {
+            IntPtr dc = IntPtr.Zero;
+            try
+            {
+                dc = GetDC(IntPtr.Zero);
+                if (dc == IntPtr.Zero) return Color.Empty;
+                uint v = GetPixel(dc, screenPoint.X, screenPoint.Y);
+                if (v == CLR_INVALID) return Color.Empty;
+                // COLORREF is 0x00BBGGRR - not RGB.
+                return Color.FromArgb((int)(v & 0xFF), (int)((v >> 8) & 0xFF), (int)((v >> 16) & 0xFF));
+            }
+            catch { return Color.Empty; }
+            finally
+            {
+                if (dc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, dc);
+            }
+        }
+
+        public const uint CLR_INVALID = 0xFFFFFFFF;
+
+        [DllImport("gdi32.dll")]
+        static extern uint GetPixel(IntPtr hdc, int x, int y);
+
+
         [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)]
         static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
 

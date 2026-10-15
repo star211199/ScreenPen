@@ -41,6 +41,11 @@ namespace ScreenPen
                 s.MosaicKey = Json.Str(m, "MosaicKey", s.MosaicKey);
                 s.SpotlightKey = Json.Str(m, "SpotlightKey", s.SpotlightKey);
                 s.FollowKey = Json.Str(m, "FollowKey", s.FollowKey);
+                s.HighlighterKey = Json.Str(m, "HighlighterKey", s.HighlighterKey);
+                s.StepKey = Json.Str(m, "StepKey", s.StepKey);
+                s.RedoKey = Json.Str(m, "RedoKey", s.RedoKey);
+                s.ColorPickerKey = Json.Str(m, "ColorPickerKey", s.ColorPickerKey);
+                s.WindowShotKey = Json.Str(m, "WindowShotKey", s.WindowShotKey);
 
                 s.PenWidth = Json.Int(m, "PenWidth", s.PenWidth);
                 s.MinPenWidth = Json.Int(m, "MinPenWidth", s.MinPenWidth);
@@ -78,6 +83,21 @@ namespace ScreenPen
                 s.ScrollFollowEnabled = Json.Bool(m, "ScrollFollowEnabled", s.ScrollFollowEnabled);
                 s.WheelScrollsDocument = Json.Bool(m, "WheelScrollsDocument", s.WheelScrollsDocument);
                 s.ScrollFollowClickThrough = Json.Bool(m, "ScrollFollowClickThrough", s.ScrollFollowClickThrough);
+
+                s.HighlighterAlpha = Json.Int(m, "HighlighterAlpha", s.HighlighterAlpha);
+                s.ArrowStyleIndex = Json.Int(m, "ArrowStyleIndex", s.ArrowStyleIndex);
+                s.StepBadgeSize = Json.Flt(m, "StepBadgeSize", s.StepBadgeSize);
+                s.StepNumberPersistent = Json.Bool(m, "StepNumberPersistent", s.StepNumberPersistent);
+
+                s.BeautifyEnabled = Json.Bool(m, "BeautifyEnabled", s.BeautifyEnabled);
+                s.BeautifyPadding = Json.Int(m, "BeautifyPadding", s.BeautifyPadding);
+                s.BeautifyRadius = Json.Int(m, "BeautifyRadius", s.BeautifyRadius);
+                s.BeautifyShadow = Json.Bool(m, "BeautifyShadow", s.BeautifyShadow);
+                s.BeautifyColor1 = Json.Str(m, "BeautifyColor1", s.BeautifyColor1);
+                s.BeautifyColor2 = Json.Str(m, "BeautifyColor2", s.BeautifyColor2);
+
+                s.PickerLoupeSize = Json.Int(m, "PickerLoupeSize", s.PickerLoupeSize);
+                s.PickerZoom = Json.Int(m, "PickerZoom", s.PickerZoom);
             }
             catch
             {
@@ -127,6 +147,24 @@ namespace ScreenPen
                 S("TextKey", s.TextKey);
                 S("MosaicKey", s.MosaicKey);
                 S("SpotlightKey", s.SpotlightKey);
+                S("FollowKey", s.FollowKey);
+                S("HighlighterKey", s.HighlighterKey);
+                S("StepKey", s.StepKey);
+                S("RedoKey", s.RedoKey);
+                S("ColorPickerKey", s.ColorPickerKey);
+                S("WindowShotKey", s.WindowShotKey);
+                I("HighlighterAlpha", s.HighlighterAlpha);
+                I("ArrowStyleIndex", s.ArrowStyleIndex);
+                F("StepBadgeSize", s.StepBadgeSize);
+                B("StepNumberPersistent", s.StepNumberPersistent);
+                B("BeautifyEnabled", s.BeautifyEnabled);
+                I("BeautifyPadding", s.BeautifyPadding);
+                I("BeautifyRadius", s.BeautifyRadius);
+                B("BeautifyShadow", s.BeautifyShadow);
+                S("BeautifyColor1", s.BeautifyColor1);
+                S("BeautifyColor2", s.BeautifyColor2);
+                I("PickerLoupeSize", s.PickerLoupeSize);
+                I("PickerZoom", s.PickerZoom);
                 I("PenWidth", s.PenWidth);
                 I("MinPenWidth", s.MinPenWidth);
                 I("MaxPenWidth", s.MaxPenWidth);

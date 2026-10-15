@@ -3,14 +3,15 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（**贴图（钉在桌面）+ 设置窗口可调整大小 + 输入框抢键 BUG + 12 项安全/稳定性加固**，
-> 见 §1.5 与 §5.0）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，248,832 bytes（243.0 KB）
-> `sha256 76238AA9FC0D7E7BB5571DF3FAD290EED8A304DC64D15F1DC7C0E7A076924F61`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（15/15）
+> 最后更新：本轮（**第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
+> + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复**，
+> 见 §1.6 与 §5.0）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，271,360 bytes（265.0 KB）
+> `sha256 F6B479FFB7AB9B68A9C391C8DA8B1B86104481F328F212619B51D45CF83B0000`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（17/17）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
-> `verify_readme.py` **7/7**、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
-> `verify_resize.py` **9/9**（本轮新增）
+> `verify_readme.py` **7/7**（本轮核对 66 键）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
+> `verify_resize.py` **9/9**
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
 > 用**文件体积**和**修改时间**对比 `src\` 最新文件即可。
@@ -39,7 +40,7 @@ cd ScreenPen
 
 ### 测试
 
-**首选：一条命令跑完全部 15 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 17 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
@@ -54,7 +55,8 @@ $refs = '/reference:System.dll','/reference:System.Core.dll',
         '/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll'
 $srcs = 'src\Config.cs','src\SettingsStore.cs','src\Native.cs','src\OverlayForm.cs',
         'src\BrushCursor.cs','src\RegionSelectForm.cs','src\AppContext2.cs',
-        'src\SettingsForm.cs','src\Shell.cs','src\PinForm.cs'
+        'src\SettingsForm.cs','src\Shell.cs','src\PinForm.cs',
+        'src\Beautifier.cs','src\ColorPickerForm.cs'
 & $csc /nologo /target:exe /platform:x64 /codepage:65001 `
       /out:build\obj\my_probe.exe $refs build\my_probe.cs $srcs
 .\build\obj\my_probe.exe
@@ -65,6 +67,12 @@ $srcs = 'src\Config.cs','src\SettingsStore.cs','src\Native.cs','src\OverlayForm.
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 D:\Miniconda3\envs\py312\python.exe build\<脚本>.py
+```
+
+可行性探针（**不编译程序源码**，量的是操作系统能力，失败≠程序回归）：
+
+```powershell
+.\build\run_feasibility.ps1     # 全过 → "ALL FEASIBILITY PROBES PASSED" + exit 0
 ```
 
 - Python：`D:\Miniconda3\envs\py312\python.exe`（3.12.14 + Pillow + numpy）。
@@ -548,9 +556,215 @@ texture `0.023` 和 `0.052`、diff `0.00%`，**取决于当时那个位置恰好
 运行时扫 160px 网格挑最有纹理的区域；纹理不够就**明确打印跳过原因**而不是报假失败。
 现在稳定拿到 texture `0.988`、diff `6.51%`，连跑两次结果一致。
 
+### 1.6 第五轮升级：功能增强第一梯队 + 界面打磨（已完成）
+
+需求原文：「帮我先做第一梯队，然后再帮我优化一下界面，让他看起来更好看，更顺眼，
+可以参考一些其他开源的一些项目」。
+
+依据是仓库根目录的调研报告 `ScreenPen功能增强调研报告.md`（581 行）与
+`ui-design-research.md`（780 行）。第一梯队 = 调研里"投入产出比最高、且现有代码结构能自然容纳"的四项。
+
+#### 1.6.1 荧光笔 `Highlighter`（`Tool.Highlighter = 8`）
+
+半透明宽笔画，**不遮住底下的文字**——这是 Snipaste / 微信截图都有的标注刚需。
+Snipaste 的关键设计是「荧光笔拥有一份**独立的 alpha**，其它笔共用一个」，
+本实现照搬了这个思路。
+
+- `Stroke.HighlightAlpha` 默认 90（16~220），与调色板颜色**解耦**：
+  换颜色不会让荧光笔突然变得不透明。
+- 绘制路径 `DrawHighlighter()`：**不能直接往屏幕上画半透明笔迹**，
+  否则同一笔重叠处会越描越深（Google 的 `over` 混合在自重叠时必然加深）。
+  做法是先画进一张 `Format32bppArgb` 的 scratch 位图，
+  再用 `ImageAttributes` + `ColorMatrix` 的 `Matrix33` 一次性把整体 alpha 乘上去，
+  最后 `DrawImage` 合成——这样一笔之内无论自重叠多少次，透明度都是均匀的。
+- scratch 位图有 `(long)bw*bh > 32L*1024*1024` 上限，超了直接跳过而不是 OOM。
+- `OnMouseMove` 的样本采集守卫是 `Pen || Highlighter`（漏掉后者会让荧光笔断线）。
+
+#### 1.6.2 序号标记 `StepNumber`（`Tool.StepNumber = 9`）
+
+每点一下画一个带数字的圆点，数字自动递增。
+
+**这里最费心思的是编号语义**，因为它直接决定导出的图对不对：
+
+- 数字存在**笔画自己身上**（`Stroke.StepIndex`），**绝不按列表位置重算**。
+  这是从 ShareX 的历史里学到的教训：ShareX 的形状历史与画布历史是**两套独立的 memento**，
+  撤销时两者不同步，序号就会错乱。
+- `RecomputeStepCounter()` **只扫 `_strokes`，不扫 `_redo`**。
+  早期版本扫了两个栈，导致「撤销掉最后一个序号后数字不能回收」——
+  导出的图里会出现 1、2、4 这种跳号。
+- 重做栈**不预留**编号：撤销会释放数字，重做会重新分配。
+- 一张图内保证「无重号、无跳号」：删掉中间某个序号，其余会重新编号。
+- `StepNumberPersistent`（默认 true）决定**跨截图**是否连续，
+  `_persistentStepCounter` 只在 `ActivateOverlay` 里播种一次，
+  这样退出再进画笔模式能接着上一张的最大数字往下走，适合做多张连续步骤图。
+
+#### 1.6.3 箭头三样式（`ArrowStyle` / `ArrowStyleIndex`）
+
+| 值 | 名称 | 实现 |
+| --- | --- | --- |
+| 0 | 直线箭头 | 默认，`DrawArrowHead` 直接画在 (a→b) 上 |
+| 1 | 弧线箭头 | 二次贝塞尔，`bow = Math.Min(len * 0.28f, 120f)`，箭头方向取**端点切线**而不是弦方向 |
+| 2 | 折线箭头 | 沿主轴先走到拐点再转向目标 |
+
+弧线箭头的箭头方向必须用**曲线在端点的切线**，用弦方向会让箭头"歪着长在曲线上"。
+
+#### 1.6.4 撤销 / 重做（`Ctrl+Z` / `Ctrl+Y`）
+
+ShareX 花了 **4.5 年**才加上撤销重做（issue #4079），本项一次做对。
+
+- 两个栈各自上限 `MaxRedoDepth = 200`。
+- **重做的判定必须排在撤销之前**：`OverlayKeyDown` 的 Ctrl 分支先测
+  `if (Matches(redo, code) || (code == Keys.Z && e.Shift))`，再测
+  `if (Matches(undo, code) || code == Keys.Z)`。
+  反过来的话裸 `code == Keys.Z` 会把 `Ctrl+Shift+Z` 一起吞掉，重做永远触发不了。
+- **`Pinned` 笔画不进重做栈**：它自己持有一张 `Bitmap`，撤销语义不明确，
+  强行入栈会引入位图生命周期问题。想删贴图就用它的关闭按钮。
+- `Clear()` 会**丢掉重做栈**（清空之后"重做"回到一个已被清掉的画面没有意义）。
+- `NoteEdit()` 必须在**每一个**提交路径里调用，否则撤销栈会漏记录。
+- `ClearForTest()` **委托给 `Clear()`**，不要各写一遍——两条路径分叉正是上面那些 bug 的来源。
+
+#### 1.6.5 窗口截图 `Ctrl+Alt+W`（`Native.WindowBounds`）
+
+**本次最容易踩坑的一项。**截光标下的顶层窗口，不框选。
+
+- 边界**必须**用 `DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS = 9, ...)`，
+  不能用 `GetWindowRect`。实测：`GetWindowRect` 返回的是 **DPI 虚拟化后**的坐标，
+  而且包含窗口周围一圈**不可见的拉伸边框**——在 200% DPI 下会截歪、截多。
+  这是**实测数据**，不是推测。
+- `AppContext2.WindowScreenshot()` 在显示任何东西**之前**先解析
+  `Native.RootWindowAt(Cursor.Position)`，并用 `OwnWindowHandles()` 排除自己，
+  否则会截出"截图里的截图"。
+- `OwnWindowHandles()` 里 `_msgWindow.Handle` 要 `try/catch` 包起来。
+- 最小化 / 不可见的窗口用 `IsIconic` / `IsWindowVisible` 跳过，
+  继续往下找可截的窗口；`finally` 里 `ResumeAfterCapture()`。
+
+#### 1.6.6 屏幕取色器 `Ctrl+Alt+P`（`src\ColorPickerForm.cs`，新增）
+
+- 全屏无边框窗口 + 冻结底图 + 放大镜（最近邻放大，边缘自动翻转避免出界）。
+- 读出框用 `Beautifier.FormatColor()` 给 `#RRGGBB`，带双层描边色块。
+- 取到之后：**替换调色板当前选中格**（`OverlayForm.SetColorFromPicker`）
+  + 色号**复制到剪贴板**。
+- 所有权：`_ownsFrozen` 为 true 时 `Dispose(bool)` 才释放 `_frozen`；
+  `AppContext2.StartColorPicker()` 用 `using` 并把 `ownsFrozen: true` 传进去。
+
+#### 1.6.7 美化截图（`src\Beautifier.cs`，新增）
+
+渐变背景 + 圆角 + 柔和阴影，**只作用于存盘文件**。
+
+- **剪贴板和贴图不受影响**，这是刻意的：美化后尺寸会变大，
+  如果连剪贴板一起改，粘进文档时尺寸对不上。
+- `Beautifier.Render()` 是**纯函数**：null 输入 / 空图 / 超大图
+  （`(long)outW*outH > 80L*1024*1024`）返回 null，不抛异常。
+- `radius` 夹到 `Math.Min(src.Width, src.Height) / 2`，半径大于短边一半会画出怪异形状。
+- **GDI+ 没有模糊原语**，柔和阴影只能靠分层圆角矩形叠出来：
+  `Layers = 6`、`Spread = 26`、`OffsetY = 10`、alpha `70*(1-t)*(1-t)`（二次衰减，外圈更淡）。
+- `TryParseColor()` 自己解析 hex（`NumberStyles.HexNumber` + `InvariantCulture`），
+  **不用 `ColorTranslator.FromHtml`**——它对非法输入的行为不可靠。
+
+#### 1.6.8 设置界面接线（`src\SettingsForm.cs`）
+
+新增 6 个可重绑快捷键 + 17 个配置项。**注意 `SettingsStore.Load/Save` 是逐字段手写的，
+不是反射**，所以每个新字段都要在 **Load 和 Save 两处**都加一行，
+漏掉一处会表现为"设置保存了但重启后丢失"。
+
+- 快捷键页三张卡都长高了以容纳新行（功能快捷键 420→496、
+  绘制中的工具快捷键 330→420、其它单键操作 240→280）。
+- 画笔页末尾新增 `BuildNewToolsCard()`：卡片「荧光笔与序号」
+  （透明度 / 箭头样式 / 序号圆点大小 / 序号跨图连续）。
+- 截图页末尾新增 `BuildBeautifyCard()` + `BuildPickerCard()`。
+- `PickColorFor(Button)` 给美化卡片挑渐变色：冻结屏幕 → `ColorPickerForm` → 写回按钮文字。
+- `ResetDefaults()` 不需要改——它调用 `LoadDraftIntoControls()`。
+
+#### 1.6.9 界面打磨
+
+依据 `ui-design-research.md` 的 token。**该文档每条结论都标了 (A) 已验证 / (B) 推荐**，
+只有 (A) 才可作为依据。
+
+**HUD（`OverlayForm`）**
+
+- 抽出**共享**的 `OverlayForm.BuildPanelShadow(w, h, radius)`：
+  10 层圆角矩形、`PanelShadowSpread = 14`、`PanelShadowOffsetY = 5`、
+  alpha `64*(1-t)^2`、最外层先画。返回**调用方拥有**的位图。
+- `DrawHudPanel()` 用它，并按 `(w, h, radius, PanelShadowSpread)` **缓存**——
+  绝不能每帧重建，那会直接把帧率打下去。
+- `DrawDrawHud`（半径 10）与 `DrawZoomHud`（半径 12）都改用它，视觉统一了。
+- 文字渲染提示必须是 `AntiAliasGridFit`：**GDI 的 ClearType 无法混进带 alpha 的表面**，
+  在 HUD 上会出彩边。绘制原点一律 `Math.Round` 取整（**永远不要 `/2f`**），
+  否则抗锯齿会把半像素糊成灰边。
+- 色块改成**双层描边**（外黑 `ARGB(190,0,0,0)` 1.4f + 内白 `ARGB(180,255,255,255)` 1.2f）。
+  原因：8 个调色板颜色里有 4 个对至少一种底色达不到 3:1 对比度，只描一层必然有看不清的组合。
+- 新增 `HudEdge` 发丝线（`ARGB(38,255,255,255)`）勾出面板轮廓。
+
+**区域选择工具条（`RegionSelectForm`）**
+
+- 新增 `DrawToolbarShadow()`，同样复用 `OverlayForm.BuildPanelShadow`（半径 9），
+  按 `(Width, Height, radius)` 缓存，`Dispose(bool)` 里一起释放。
+
+**修掉一个真实的文字重叠缺陷（`SettingsForm` 画笔页）**
+
+`_chkSmooth`（"平滑线条（抗锯齿）"）在 `(16, sy)`，
+而它的说明文字 `AddHint(..., 34, sy + 2, ...)` 放在**同一个 y**、x=34 —— 
+正好压在自己的复选框标签上。用 `render_scroll.exe` 渲染画笔页截到 y=900 才看出来，
+纯算术探针完全测不到。修法：`sy += _chkSmooth.PreferredSize.Height + 4;` 让说明文字排到下一行。
+
+（注意 `CheckBox` **没有** `PreferredHeight` 属性，用 `PreferredSize.Height`。）
+
+**修掉高 DPI 下卡片的大片空白（重要）**
+
+现象：设置页每张卡片标题底下都有一条明显的空白带（`快捷键` 页最大 211px）。
+
+根因链条：
+
+1. `FinishPage()` 在 `BuildPages()` 期间跑，**那时 `ApplyDpiScale()` 还没执行**；
+2. 那一刻说明文字的 `MaximumSize` 宽度还是**未缩放的 96 DPI 值**，
+   而文字本身**已经按真实 DPI 渲染**了（`Scale()` 不碰 `Font`）；
+3. 于是这段文字在测量时被折成**远多于实际**的行数，
+   `FinishPage()` 忠实地为这些行预留了高度；
+4. `ApplyDpiScale()` 随后把这个偏大的高度**原样乘以 2**，
+   而加宽后的标签又塌回了真实行数——差值就变成卡片底部的空白带。
+
+修法：新增 `ReflowCardHeights()`，在 `ApplyDpiScale()` 里、
+`p.Scale()` 之后 `ShowPage()` 之前调用。它按 `Top` 排序还原叠放次序，
+用**缩放后**的几何重新量每张卡，并重写 `AutoScrollMinSize`。
+作者的 authoured 高度也按 `_dpiScale` 一起缩放（它是 96 DPI 的数字）。
+
+同时把两处自己写得过大的 authored 值降回去
+（`功能快捷键` 496→120、`美化截图` 340→120、`启动与后台` 210→120、
+`全局快捷键` 110→60）——测量才是权威，authored 只是给"还没布局"的卡兜底。
+
+**效果（实测，`build\obj\dump_cards.exe`）**：每页内容高度
+`快捷键 3342→2801`、`画笔 2568→2261`、`截图 2784→2463`、`常规 1968→1562`，
+共去掉约 2000px 空白；每张卡的 `dead`（高度 − 内容底 − 内边距）从最大 211 降到 ≤45。
+
+**证据**：`build\layout_cards.cs`（**新增**，加入 `run_probes.ps1`，探针总数 16→**17**）
+断言三件事——① 每个控件都完整落在自己的卡内（含 `Bottom/Right/Top/Left` 四面）、
+② 卡片之间不重叠、③ 没有卡片在内容下方留 >40px 空白。
+另加"超出视口的页必须能把 `AutoScrollMinSize` 撑到最后一个卡"。
+修前 **2 FAIL**，修后 **21 PASS / 0 FAIL**。
+
+> 这个探针的价值在于它测的是 PNG 里**看不出来但确实错**的性质：
+> 一张截图能看出"这里好像空了点"，但只有算术能断言"没有任何控件越出卡片"。
+
+#### 1.6.10 本轮的验证结果
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\run_probes.ps1` | **17/17 PASS**（`tier1_probe` 78 PASS/0 FAIL、`layout_cards` 21/0、`hotkey_conflict_probe` 30/0） |
+| `verify_ui.py` | **81/81 断言通过** |
+| `verify_resize.py` | 全部通过，设计尺寸 **2386×1704 仍可精确还原** |
+| `verify_upgrade.py` | **26/26 通过** |
+| `verify_readme.py` | **7/7 通过**，README 的 66 键与程序 **逐一一致**且可回环 |
+| 发布构建 | `dist\ScreenPen.exe` 271,360 B，sha256 `F6B479FF…` |
+| 配置回环 | 17 个新键全部写出（共 66 键） |
+
+> `hotkey_conflict_probe` 里原来是 `Check(..., boxes.Count == 19)` 的**硬编码行数**，
+> 每加一个键就会假失败。已改成和窗体自己的 `_bindings` 集合比数量
+> （保留 `>= 19` 的下限），这样"界面里建了行但没进 `_bindings`"这类真 bug 才会被抓住。
+
 ---
 
 ## 2. 待修复的缺陷（TODO）
+
 
 > **§2.1–§2.4 已全部完成**（见 §1.4）。本节保留原始的问题描述与根因分析，
 > 作为"这些问题当初为什么会出现"的历史记录，以及**验收标准的出处**。
@@ -976,8 +1190,10 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (15/15)** | 编译并运行下面 15 个进程内探针，逐个打印 PASS/FAIL |
-| `build\hotkey_conflict_probe.cs` | 进程内 | **29/29 PASS** | 快捷键冲突 UX（含 `PromptOverride`） |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (17/17)** | 编译并运行下面 17 个进程内探针，逐个打印 PASS/FAIL |
+| `build\tier1_probe.cs` | 进程内 | **78 PASS / 0 FAIL** | **本轮新增**：第一梯队四项功能。9 组：枚举与笔画、撤销重做（多级 + 序号回收）、序号徽标编号、荧光笔（**alpha 独立性**：改透明度不影响其它笔画）、箭头三样式（**按像素差**断言三种样式几何确实不同）、窗口几何（DWM 物理边界）、`PixelAt`、美化器（圆角不泄漏内容用 `BeautifyRadius=0` 差分验证）、设置回环 |
+| `build\layout_cards.cs` | 进程内 | **21 PASS / 0 FAIL** | **本轮新增**：卡片布局健全性。① 每个控件四面都在自己的卡内；② 卡片互不重叠；③ 卡片内容下方无 >40px 空白；④ 溢出页的 `AutoScrollMinSize` 能滚到最后一卡。**这是"卡片底部大片空白"的回归防线** |
+| `build\hotkey_conflict_probe.cs` | 进程内 | **30/30 PASS** | 快捷键冲突 UX（含 `PromptOverride`）。**本轮改法**：键行数不再硬编码，改为与窗体自己的 `_bindings` 集合比数量 |
 | `build\region_probe.cs` | 进程内 | **PASS** | 区域截图、裁剪、剪贴板、保存、取消 |
 | `build\follow_probe.cs` | 进程内 | **26 `[PASS]` / 0 `[FAIL]`** | 滚动跟随（算法层 + F 集成层 + 滚轮路由 + 空闲退出 + 拒绝理由） |
 | `build\tools_probe.cs` | 进程内 | **PASS** | 工具、修饰键、渲染、点数断言 |
@@ -993,6 +1209,12 @@ Accent   = RGB(232, 160, 0)
 | `build\typing_probe.cs` | 进程内 | **19 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：打字时单键命令不抢键。命令键清单 `L/P/O/E/A/B/1/M/R/T/F/0`；`Tab` 不闩 `_tabHeld`；`WM_CHAR` 送入后文字成笔画 |
 | `build\measure_toolbar.cs` | 进程内 | **ALL TOOLBAR MEASUREMENTS PASSED**（189 `[PASS]` / 0 `[FAIL]`） | **本轮新增**：5 种桌面宽度（2880/1920/1280/900/640）× 3 种默认动作，用 `TextRenderer.MeasureText` 量**每个按钮自己的标签**是否真的装得下。这是 §1.5.5 工具条标签被裁切的**回归防线**——老探针只查"不重叠、在窗内"，几何全对而文字全被裁 |
 | `build\render_ui.cs` | 诊断 | — | 逐页渲染 PNG → `build\shots\render\`，**供人眼看** |
+| `build\render_scroll.cs` | 诊断 | — | **本轮新增**：按 `scrollY` 渲染设置页的**真实视口**（`render_ui.cs` 渲染的是整页全高）。正是它截到了 `_chkSmooth` 与说明文字重叠——纯算术探针测不到这种缺陷 |
+| **`build\run_feasibility.ps1`** | **可行性入口** | **ALL FEASIBILITY PROBES PASSED (4 个 / 38 条)** | **本轮新增**：跑下面 4 个**独立**探针（不编译程序源码）。它们量的是**操作系统能力**而不是程序行为，所以失败的含义是"本机/本 OS 版本没有这个 API"，不是"程序回归了"，因此刻意**不放进 `run_probes.ps1`**。`gif_probe` 需要额外的 WPF 引用（`WindowsBase.dll` 在 **`WPF\` 子目录**而不是 Framework64 根目录；`System.Xaml.dll` 必须取 Framework64 的，GAC 那份不是文件，会 `error CS0006`） |
+| `build\ocr_probe2.cs` | 可行性 | **9 passed / 0 failed** | 反射绑定 WinRT `Windows.Media.Ocr`。**注意运行时要 .NET 4.8**（编译器虽是 C# 5，但运行时是 4.8.09221）；`System.Runtime.WindowsRuntime`（`AsTask`/`GetAwaiter`）从 .NET 4.5 才有，所以 ShareX 那种 `await` 写法不可用；winrt 异步的返回值是 `__ComObject` 且 `GetInterfaces()` 为空，必须用泛型 `CastTo<T>` + 轮询 `Status` 再 `GetResults()`。**v1（`ocr_probe.cs`）已删除**——它在第一个异步调用就失败，v2 文件头记录了这个原因 |
+| `build\feature_probe.cs` | 可行性 | **10 passed / 0 failed** | 证明系统**没有**内置位图条码解码器 → 要加就得引 QRCoder(MIT) / ZXing.Net(Apache-2.0)，两者都是纯 C#，许可证干净 |
+| `build\roadmap_probe.cs` | 可行性 | **12 passed / 0 failed** | 用合成滚动帧独立复现行/列剖面相关算法，证明滚动拼接截图在本项目的算法基础上可行 |
+| `build\gif_probe.cs` | 可行性 | **7 passed / 0 failed** | 用 WPF 编码器写出 30 帧 800×600 动画 GIF（61 KB，约 2 KB/帧），**零外部依赖**——不需要 ffmpeg（省掉 ~70 MB 和 LGPL/GPL 许可问题；`gifski` 是 AGPL-3.0-or-later，MP4 路线已排除） |
 | `build\verify_hotkeys.py` | 跨进程 E2E | **20/20 PASS** | 快捷键重绑 + 冲突保存 + 读回校验 |
 | `build\verify_brush.py` | 跨进程 | **17/17 PASS** | 画笔光标 |
 | `build\verify_ui.py` | 跨进程 | **81/81 PASS** | UI 结构（**平铺 glob `build\shots\*.png`，别在里面留临时图**） |
@@ -1026,7 +1248,33 @@ Accent   = RGB(232, 160, 0)
 
 > 按**倒序**排列：`5.0` 是本轮，越往后越早。
 
-### 5.0 本轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
+### 5.0 本轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
+
+| 文件 | 变更 |
+|---|---|
+| `src\Beautifier.cs` | **新增（第 12 个源文件）**，212 行。`public static class Beautifier`：`Render(Bitmap, Settings)` 纯函数（null / 空图 / `(long)outW*outH > 80L*1024*1024` 一律返回 null）、45° `LinearGradientBrush`、圆角夹到短边一半、`Layers=6` / `Spread=26` / `OffsetY=10` / alpha `70*(1-t)^2` 的分层柔光阴影；`TryParseColor`（自己解 hex，**不用** `ColorTranslator.FromHtml`）；`FormatColor` → `#RRGGBB` 大写；`ShadowRoom = 60` |
+| `src\ColorPickerForm.cs` | **新增（第 13 个源文件）**。`ColorPickerForm(Settings, Rectangle, Bitmap, bool ownsFrozen)`：`FormBorderStyle.None` + `Bounds = desktop` + `TopMost` + `KeyPreview`；放大镜 2~32×、loupe 60~400；`SampleAt` 先读冻结帧再退到 `Native.PixelAt`；左键取色 → `DialogResult.OK`，右键/中键/`Esc` 取消；`OnShown` 里 `Native.ForceForeground`；`Dispose(bool)` 只在 `ownsFrozen` 时释放 `_frozen` |
+| `src\Config.cs` | `enum Tool` 追加 **`Highlighter = 8` / `StepNumber = 9`**；新增 **`enum ArrowStyle { Straight, Curved, Elbow }`**；`Stroke` 新增 `Arrow` / `HighlightAlpha = 90` / `StepIndex`；`Settings` 新增 `HighlighterKey="H"` / `StepKey="N"` / `RedoKey="Ctrl+Y"` / `ColorPickerKey="Ctrl+Alt+P"` / `WindowShotKey="Ctrl+Alt+W"` / `HighlighterAlpha` / `ArrowStyleIndex` / `StepBadgeSize` / `StepNumberPersistent` / `Beautify*` 六项 / `PickerLoupeSize` / `PickerZoom`；`Clamp()` 补全部新字段的取值范围与 `TryParseColor` 校验回退；`ToolForKey()` 加 `H` / `N` |
+| `src\SettingsStore.cs` | `Load` / `Save` **各加一行**承接全部 17 个新键（逐字段手写，非反射——**漏一处就会"存了但重启丢失"**） |
+| `src\Native.cs` | 新增 `DWMWA_EXTENDED_FRAME_BOUNDS = 9` / `DwmGetWindowAttribute` / `IsIconic` / `IsWindowVisible` / `WindowBounds(IntPtr)` / `FromRect(RECT)` / `RootWindowAt(Point)` / `IsCapturableWindow(IntPtr, IntPtr[])` / `PixelAt(Point)` / `CLR_INVALID` |
+| `src\OverlayForm.cs` | 新增 `Tool.Highlighter` / `Tool.StepNumber` 的绘制与命中；**`DrawHighlighter()`**（`Format32bppArgb` scratch + `ImageAttributes`/`ColorMatrix` 的 `Matrix33` 整体乘 alpha，解决自重叠加深；`(long)bw*bh > 32L*1024*1024` 上限）；`DrawStepBadge()`（`StepBadgeSize*_zoom/2`，`Microsoft YaHei UI` Bold）；`DrawArrow(g, pen, a, b, ArrowStyle)` 三样式（Curved 用二次贝塞尔且箭头取**端点切线**，`bow = Math.Min(len*0.28f, 120f)`；Elbow 走主轴）；撤销/重做双栈（`_redo` / `MaxRedoDepth = 200` / `_stepCounter` / `static _persistentStepCounter` / `Undo` 跳过 `Pinned` / `Redo` / `CanUndo` / `CanRedo` / `NoteEdit`）；`RecomputeStepCounter()` **只扫 `_strokes`**；`ClearForTest()` 委托 `Clear()`；`SetColorFromPicker`；`MakeStroke` / `PlaceStepBadge`；`ToolName` 加"荧光笔"/"序号"；HUD 提示更新为 `P/H/N/Ctrl+Y` 版本 |
+| `src\OverlayForm.cs`（UI 打磨） | **新增共享 `public static Bitmap BuildPanelShadow(int, int, float)`**（`PanelShadowSpread = 14` / `PanelShadowOffsetY = 5` / 10 层 / alpha `64*(1-t)^2` / 最外层先画）+ `public const` 两项 + 缓存字段；**新增 `DrawHudPanel(Graphics, RectangleF, float)`**（按 `(w,h,radius,spread)` 缓存 + `DrawImageUnscaled` + `RoundRect` 填充 + `HudEdge` 发丝线）；`DrawDrawHud`（半径 10）/ `DrawZoomHud`（半径 12）改用它并统一 `AntiAliasGridFit` + `Math.Round` 取整；色块改**双层描边**；`_hudShadowCache` 的释放**折进已有的唯一那个 `Dispose(bool)`**（**绝不能新增第二个 override**） |
+| `src\RegionSelectForm.cs` | 新增 `DrawToolbarShadow(Graphics, Rectangle, float)` —— 复用 `OverlayForm.BuildPanelShadow`（半径 9），按 `(Width, Height, radius)` 缓存；`DrawToolbar` 在 `Inflate` 之后、`RoundRect` 填充之前调用；`Dispose(bool)` 一起释放 `_toolbarShadow` |
+| `src\SettingsForm.cs` | 新增 6 个可重绑 `HotkeyBox`（`_hkHighlighter` / `_hkStep` / `_hkRedo` / `_hkWindowShot` / `_hkPicker`）；**`BuildNewToolsCard()`**（画笔页，荧光笔透明度 / 箭头样式 / 序号圆点 / 序号跨图连续）；**`BuildBeautifyCard()`** + **`BuildPickerCard()`**（截图页）；`PickColorFor(Button)` 给渐变色开取色器；`LoadDraftIntoControls` / `OnSave` 各补 17 项；三张快捷键卡长高以容纳新行。**另修两处缺陷**：① 画笔页 `_chkSmooth` 与其说明文字同 y 重叠（`sy += _chkSmooth.PreferredSize.Height + 4`，注意 `CheckBox` 无 `PreferredHeight`）；② **新增 `ReflowCardHeights()`** 并在 `ApplyDpiScale()` 里 `p.Scale()` 之后、`ShowPage()` 之前调用，修掉高 DPI 下卡片底部的大片空白（根因见 §1.6.9）；四处 authored 高度降回兜底值 |
+| `src\AppContext2.cs` | `HK_WINDOWSHOT = 7` / `HK_PICKER = 8`；**`WindowScreenshot()`**（先 `RootWindowAt` 再显示任何东西，`OwnWindowHandles()` 排除自身，`Native.WindowBounds`，`finally { ResumeAfterCapture(); }`）；**`StartColorPicker()`**（冻结屏幕 → 隐藏 overlay → `using ColorPickerForm(..., ownsFrozen: true)` → `SetColorFromPicker` + 剪贴板色号）；`SaveBitmap` 在 `_cfg.BeautifyEnabled` 时走 `Beautifier.Render`，否则退到 `static SaveBitmapRaw`；`OverlayKeyDown` 的 Ctrl 分支**先判重做再判撤销**；`OwnWindowHandles()` 包 `try/catch` |
+| `build\tier1_probe.cs` | **新增**，约 800 行 / 40,550 bytes，9 组 78 条断言（枚举与笔画、撤销重做、序号徽标、荧光笔、箭头三样式、窗口几何、`PixelAt`、美化器、设置回环）。`Main` 第一句就是 `EnableDpiAwareness()` |
+| `build\layout_cards.cs` | **新增**，加入 `run_probes.ps1`。断言"控件不越出卡片 / 卡片不重叠 / 卡片底部无 >40px 空白 / 溢出页能滚到最后一卡"，**21 PASS / 0 FAIL** |
+| `build\run_probes.ps1` | 探针数 16 → **17**（加入 `layout_cards`） |
+| `build\hotkey_conflict_probe.cs` | 把 `boxes.Count == 19` 的**硬编码行数**改成与窗体自己的 `_bindings` 集合比数量（保留 `>= 19` 下限）——每加一个键就假失败的断言没有价值，只有"界面上建了行却没进 `_bindings`"才是真 bug |
+| `build\render_scroll.cs` | **新增**。`render_ui.cs` 渲染的是整页全高，比屏幕还高；这个按 `scrollY` 渲染**真实视口**，为的是看折线以下的卡片（正是它抓到了 `_chkSmooth` 的重叠） |
+| `build\run_feasibility.ps1` | **新增**。一条命令跑 4 个**独立**可行性探针（`ocr_probe2` / `feature_probe` / `roadmap_probe` / `gif_probe`，共 38 条断言）。它们不编译程序源码，量的是 OS 能力，所以刻意不进 `run_probes.ps1`。文件里记了 `gif_probe` 的 WPF 引用坑（`WindowsBase.dll` 在 `WPF\` 子目录、`System.Xaml.dll` 取 Framework64 的） |
+| `build\ocr_probe.cs` | **删除**（v1）。它在第一个 WinRT 异步调用就失败，`ocr_probe2.cs` 的文件头记录了这个原因和修法，留着 v1 只会误导 |
+| `README.md` | 标题特性行 + EXE 体积 243→**265 KB** + 配置键数 49→**66**；新增 **荧光笔 / 序号 / 箭头样式 / 撤销重做 / 窗口截图 / 屏幕取色器 / 美化截图** 七节；快捷键两张表补齐 6 个新键；配置 JSON 块补全 17 个键（`verify_readme.py` 逐键核对）；源码表 11→**13** 行；探针数 15→**17** |
+| `HANDOVER.md` | **§1.6（本轮四个功能 + UI 打磨 + 卡片空白根因链 + 验证表）** + 本节 + §5 倒序重排 |
+
+> 本轮**没有**改动的源文件：`src\Program.cs`、`src\Shell.cs`、`src\BrushCursor.cs`、`src\PinForm.cs`。
+
+### 5.1 前一轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
 
 | 文件 | 变更 |
 |---|---|
@@ -1051,7 +1299,7 @@ Accent   = RGB(232, 160, 0)
 
 > 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
 
-### 5.1 上一轮会话（7 项需求验收 + 两个真实 BUG 修复）
+### 5.2 前两轮（7 项需求验收 + 两个真实 BUG 修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1067,7 +1315,7 @@ Accent   = RGB(232, 160, 0)
 | `README.md` | EXE 体积 229 KB → **230 KB**；新增"程序已在运行时再双击 EXE 会弹出设置窗口"；修正文字标注的按键说明（`Enter` 确认 / `Esc` 取消，原文错写成 `Esc` 确认） |
 | `HANDOVER.md` | 本节 + §2.5 陷阱表 + §4 测试资产清单刷新 |
 
-### 5.2 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
+### 5.3 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
 
 | 文件 | 变更 |
 |---|---|
@@ -1082,7 +1330,7 @@ Accent   = RGB(232, 160, 0)
 | `build\measure_ui.cs` | **新增**，缩放后真实几何断言 |
 | `build\render_ui.cs` | **新增**，逐页渲染 PNG 供人眼确认 |
 
-### 5.3 更早（快捷键冲突 UX）
+### 5.4 更早（快捷键冲突 UX）
 
 | 文件 | 变更 |
 |---|---|

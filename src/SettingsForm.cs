@@ -42,6 +42,8 @@ namespace ScreenPen
         HotkeyBox _hkZoomIn, _hkZoomOut;
         HotkeyBox _hkPen, _hkLine, _hkRect, _hkEllipse, _hkArrow;
         HotkeyBox _hkText, _hkMosaic, _hkSpotlight, _hkClear, _hkFollow;
+        HotkeyBox _hkHighlighter, _hkStep, _hkRedo;
+        HotkeyBox _hkWindowShot, _hkPicker;
 
         /// <summary>
         /// Every configurable key in dialog order. It is built while the pages
@@ -104,6 +106,14 @@ namespace ScreenPen
         CheckBox _chkAutoSave, _chkSound;
         TextBox _txtFolder;
         ComboBox _cmbFormat;
+
+        // Tier-1 additions.
+        NumericUpDown _numHighlightAlpha, _numStepBadge, _numPickerLoupe, _numPickerZoom;
+        ComboBox _cmbArrowStyle;
+        CheckBox _chkStepPersistent;
+        CheckBox _chkBeautify, _chkBeautifyShadow;
+        NumericUpDown _numBeautifyPad, _numBeautifyRadius;
+        Button _btnBeautifyColor1, _btnBeautifyColor2;
 
         Label _status;
 
@@ -334,6 +344,17 @@ namespace ScreenPen
             {
                 p.Scale(new SizeF(s, s));
             }
+
+            // Re-derive card heights now that the boxes are scaled.
+            //
+            // FinishPage() measured them at 96 DPI, and Scale() then multiplied
+            // those heights verbatim. That is wrong for any card whose text
+            // wraps: the description label's MaximumSize *width* is scaled too,
+            // so the same sentence needs fewer lines at 192 DPI - while the
+            // height reserved for it was based on the 96 DPI line count. The
+            // result was a card up to twice as tall as its content, which read
+            // as a large empty band under the heading.
+            ReflowCardHeights();
 
             // Re-attach the page that was showing.
             ShowPage(_currentPage);
@@ -806,6 +827,62 @@ namespace ScreenPen
             _cards = new List<Panel>();
         }
 
+        /// <summary>
+        /// Re-measures and re-stacks every card on every page after the DPI
+        /// scale pass, and rewrites each page's scroll extent.
+        ///
+        /// Why this is needed: FinishPage() runs during BuildPages(), i.e.
+        /// before ApplyDpiScale(). At that moment a description Label's
+        /// MaximumSize width is still the authored 96 DPI value while the text
+        /// itself already renders at the monitor's real DPI, so the label wraps
+        /// to far more lines than it will actually need. FinishPage() faithfully
+        /// reserves room for those lines, and Scale() then multiplies that
+        /// generous height verbatim - producing cards with a large empty band
+        /// under the heading once the widened label collapsed back to its real
+        /// line count.
+        ///
+        /// Re-measuring here, against the scaled geometry, is the only place the
+        /// true wrapped height is knowable.
+        /// </summary>
+        void ReflowCardHeights()
+        {
+            foreach (Panel page in _pages.Values)
+            {
+                // Cards were added Dock=None with explicit Top offsets, so the
+                // authored stacking order is recovered by sorting on Top - which
+                // Scale() has already multiplied along with everything else.
+                List<Panel> cards = new List<Panel>();
+                foreach (Control c in page.Controls)
+                {
+                    Panel card = c as Panel;
+                    if (card != null) cards.Add(card);
+                }
+                cards.Sort(delegate(Panel a, Panel b) { return a.Top.CompareTo(b.Top); });
+
+                int y = 0;
+                foreach (Panel card in cards)
+                {
+                    int needed = 0;
+                    foreach (Control c in card.Controls)
+                    {
+                        int bottom = c.Bottom + c.Margin.Bottom;
+                        if (bottom > needed) needed = bottom;
+                    }
+                    needed += CardBottomPad;
+
+                    // The authored floor is a 96 DPI figure, so it scales too.
+                    int authored = card.Tag is int
+                        ? (int)Math.Round((int)card.Tag * _dpiScale) : 0;
+
+                    card.Height = Math.Max(Math.Max(needed, authored), 60);
+                    card.Top = y;
+                    y += card.Height + (int)Math.Round(CardGap * _dpiScale);
+                }
+
+                page.AutoScrollMinSize = new Size(0, y + PagePadY);
+            }
+        }
+
         /// <summary>The page whose cards are currently being built.</summary>
         Panel _currentBuildingPage;
 
@@ -1109,10 +1186,13 @@ namespace ScreenPen
             Card2("全局快捷键",
                 "点击输入框后直接按下想要的组合键即可录制。按 Backspace/Delete 清空。\n" +
                 "快捷键为全局生效（软件在后台运行时也能触发）。若某个组合被系统或其它软件占用，" +
-                "保存时会明确提示。", 130);
+                "保存时会明确提示。", 60);
 
             // ---- global action hotkeys ----------------------------------------
-            Panel hot = Card2("功能快捷键", "这些组合键在任何程序中都能触发。", 420);
+            // The authored height is only a floor for cards that have not been
+            // laid out yet; the real height always comes from measuring the rows
+            // below, so this stays deliberately small.
+            Panel hot = Card2("功能快捷键", "这些组合键在任何程序中都能触发。", 120);
 
             int y = _cardContentTop;
             const int gap = 38;
@@ -1121,13 +1201,15 @@ namespace ScreenPen
             _hkLive = AddHotkeyRow(hot, "实时缩放（放大镜）", "实时缩放", ref y, gap);
             _hkShot = AddHotkeyRow(hot, "区域截图", "区域截图", ref y, gap);
             _hkCopyShot = AddHotkeyRow(hot, "区域截图并复制", "区域截图并复制", ref y, gap);
+            _hkWindowShot = AddHotkeyRow(hot, "窗口截图（整个前台窗口）", "窗口截图", ref y, gap);
+            _hkPicker = AddHotkeyRow(hot, "屏幕取色器", "取色器", ref y, gap);
             _hkZoomIn = AddHotkeyRow(hot, "放大画面", "放大", ref y, gap);
             _hkZoomOut = AddHotkeyRow(hot, "缩小画面", "缩小", ref y, gap);
 
             // ---- in-overlay tool keys ----------------------------------------
             Panel tools = Card2("绘制中的工具快捷键",
                 "在画笔模式下按键切换工具。这些都是单键，不会被注册为全局热键，" +
-                "因此不会影响你在其它程序里打字。", 330);
+                "因此不会影响你在其它程序里打字。", 420);
 
             y = _cardContentTop;
             _hkPen = AddToolKeyRow(tools, "画笔", "画笔", ref y, gap);
@@ -1138,19 +1220,22 @@ namespace ScreenPen
             _hkText = AddToolKeyRow(tools, "文字标注", "文字标注", ref y, gap);
             _hkMosaic = AddToolKeyRow(tools, "马赛克", "马赛克", ref y, gap);
             _hkSpotlight = AddToolKeyRow(tools, "聚光灯", "聚光灯", ref y, gap);
+            _hkHighlighter = AddToolKeyRow(tools, "荧光笔", "荧光笔", ref y, gap);
+            _hkStep = AddToolKeyRow(tools, "序号标记", "序号标记", ref y, gap);
 
             // ---- other single keys -------------------------------------------
-            Panel other = Card2("其它单键操作", "同样可以自定义。", 240);
+            Panel other = Card2("其它单键操作", "同样可以自定义。", 280);
 
             y = _cardContentTop;
             _hkClear = AddToolKeyRow(other, "清空所有标注", "清空标注", ref y, gap);
             _hkFollow = AddToolKeyRow(other, "跟随滚动模式开/关", "跟随滚动", ref y, gap);
             _hkUndo = AddToolKeyRow(other, "撤销上一笔", "撤销", ref y, gap);
+            _hkRedo = AddToolKeyRow(other, "重做（恢复被撤销的标注）", "重做", ref y, gap);
             _hkSave = AddToolKeyRow(other, "保存标注图", "保存标注图", ref y, gap);
             _hkCopy = AddToolKeyRow(other, "复制到剪贴板", "复制到剪贴板", ref y, gap);
 
             _cardContentTop = AddHint(other,
-                "提示：撤销 / 保存 / 复制需要带 Ctrl（例如 Ctrl+Z），这样才不会和打字冲突。",
+                "提示：撤销 / 重做 / 保存 / 复制需要带 Ctrl（例如 Ctrl+Z、Ctrl+Y），这样才不会和打字冲突。",
                 16, y + 2, CardWidth - 48);
 
             FinishPage();
@@ -1502,7 +1587,11 @@ namespace ScreenPen
                 FlatStyle = FlatStyle.Flat
             };
             style.Controls.Add(_chkSmooth);
-            sy = AddHint(style, "关闭后线条呈像素感，适合在放大画面中做精确标注。", 34, sy + 2, CardWidth - 90);
+            // The hint goes BELOW the checkbox, not beside it. It used to sit at
+            // the checkbox's own Y with x=34, which put the hint straight on top
+            // of the label the user was meant to read.
+            sy += _chkSmooth.PreferredSize.Height + 4;
+            sy = AddHint(style, "关闭后线条呈像素感，适合在放大画面中做精确标注。", 34, sy, CardWidth - 90);
             sy += 12;
 
             _chkBrushCursor = new CheckBox
@@ -1534,11 +1623,76 @@ namespace ScreenPen
             _chkModCtrlShift = ModBox(style, "按住 Ctrl+Shift 画箭头", 396, sy);
 
             _cardContentTop = AddHint(style,
-                "工具键（默认 P/L/R/O/A/T/M/K）先选中工具；按住上面的修饰键时，" +
+                "工具键（默认 P/L/R/O/A/T/M/K/H/N）先选中工具；按住上面的修饰键时，" +
                 "本次拖动会临时改用对应形状，松开后恢复原工具。",
                 16, sy + 34, CardWidth - 48);
 
+            BuildNewToolsCard();
             FinishPage();
+        }
+
+        /// <summary>
+        /// Settings for the tools added in the tier-1 pass: the highlighter, the
+        /// arrow shaft styles, and the numbered step badges. Grouped into one
+        /// card because they are all "how the new tools draw" rather than
+        /// "which key selects them".
+        /// </summary>
+        void BuildNewToolsCard()
+        {
+            Panel t = Card2("荧光笔与序号",
+                "荧光笔用半透明色块压住文字，透明度独立于画笔颜色；" +
+                "序号标记按点击顺序自动编号，适合写操作步骤。", 300);
+
+            int y = _cardContentTop;
+
+            t.Controls.Add(RowLabel("荧光笔透明度", 16, y + 4));
+            _numHighlightAlpha = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 16, Maximum = 220, Increment = 5,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            t.Controls.Add(_numHighlightAlpha);
+            t.Controls.Add(RowLabel("数值越小越透明", 316, y + 4));
+            y += 40;
+
+            t.Controls.Add(RowLabel("箭头样式", 16, y + 4));
+            _cmbArrowStyle = new ComboBox
+            {
+                Bounds = new Rectangle(220, y, 160, 28),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = CardAlt, ForeColor = TextMain, FlatStyle = FlatStyle.Flat
+            };
+            _cmbArrowStyle.Items.AddRange(new object[] { "直线箭头", "弧线箭头", "折线箭头" });
+            t.Controls.Add(_cmbArrowStyle);
+            t.Controls.Add(RowLabel("对新画的箭头生效", 396, y + 4));
+            y += 40;
+
+            t.Controls.Add(RowLabel("序号圆点大小 (px)", 16, y + 4));
+            _numStepBadge = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 16, Maximum = 120, Increment = 2,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            t.Controls.Add(_numStepBadge);
+            y += 40;
+
+            _chkStepPersistent = new CheckBox
+            {
+                Text = "序号跨截图连续编号（下一张图接着上一张的号码）",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            t.Controls.Add(_chkStepPersistent);
+
+            _cardContentTop = AddHint(t,
+                "在同一张截图里撤销一个序号后，它的号码会被下一个序号重新使用；" +
+                "上面的选项只影响「关掉绘制模式再重新开始」时的起点。",
+                16, y + 34, CardWidth - 48);
         }
 
         CheckBox ModBox(Panel host, string text, int x, int y)
@@ -1718,14 +1872,155 @@ namespace ScreenPen
             _cardContentTop = AddHint(scope,
                 "托盘菜单里也可以直接选择「整屏截图」或「复制整屏」。", 16, sy, CardWidth - 48);
 
+            BuildBeautifyCard();
+            BuildPickerCard();
             FinishPage();
+        }
+
+        /// <summary>
+        /// The "beautify" card: wraps saved screenshots in a padded gradient card
+        /// with rounded corners and a soft shadow, the way CleanShot X / Shottr /
+        /// Xnapper do. Off by default because it changes the saved file's
+        /// dimensions, which would surprise anyone who just wants the pixels.
+        /// </summary>
+        void BuildBeautifyCard()
+        {
+            Panel b = Card2("美化截图",
+                "开启后，保存的图片会自动加一圈渐变背景、圆角和柔和阴影，" +
+                "适合直接发到聊天窗口或文档里。复制到剪贴板和贴图不受影响。", 120);
+
+            int y = _cardContentTop;
+
+            _chkBeautify = new CheckBox
+            {
+                Text = "保存时自动美化（图片尺寸会变大）",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            b.Controls.Add(_chkBeautify);
+            y += 38;
+
+            b.Controls.Add(RowLabel("内边距 (px)", 16, y + 4));
+            _numBeautifyPad = new NumericUpDown
+            {
+                Bounds = new Rectangle(190, y, 80, 28),
+                Minimum = 0, Maximum = 400, Increment = 4,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            b.Controls.Add(_numBeautifyPad);
+
+            b.Controls.Add(RowLabel("圆角 (px)", 300, y + 4));
+            _numBeautifyRadius = new NumericUpDown
+            {
+                Bounds = new Rectangle(430, y, 80, 28),
+                Minimum = 0, Maximum = 200, Increment = 2,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            b.Controls.Add(_numBeautifyRadius);
+            y += 40;
+
+            _chkBeautifyShadow = new CheckBox
+            {
+                Text = "添加柔和阴影",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            b.Controls.Add(_chkBeautifyShadow);
+            y += 38;
+
+            b.Controls.Add(RowLabel("背景渐变", 16, y + 4));
+            _btnBeautifyColor1 = MakeButton("#6D5BFF", false);
+            _btnBeautifyColor1.Bounds = new Rectangle(120, y - 1, 130, 30);
+            _btnBeautifyColor1.Click += (s, e) => PickColorFor(_btnBeautifyColor1);
+            b.Controls.Add(_btnBeautifyColor1);
+
+            _btnBeautifyColor2 = MakeButton("#22B8CF", false);
+            _btnBeautifyColor2.Bounds = new Rectangle(260, y - 1, 130, 30);
+            _btnBeautifyColor2.Click += (s, e) => PickColorFor(_btnBeautifyColor2);
+            b.Controls.Add(_btnBeautifyColor2);
+
+            Button swap = MakeButton("对调", false);
+            swap.Click += (s, e) =>
+            {
+                string tmp = _btnBeautifyColor1.Text;
+                _btnBeautifyColor1.Text = _btnBeautifyColor2.Text;
+                _btnBeautifyColor2.Text = tmp;
+            };
+            b.Controls.Add(swap);
+            LayoutButtonRow(400, y - 1, 10, 30, swap);
+
+            _cardContentTop = AddHint(b,
+                "颜色可以填 #RRGGBB 形式，也可以点按钮用屏幕取色器选取。",
+                16, y + 34, CardWidth - 48);
+        }
+
+        /// <summary>Loupe geometry for the screen colour picker.</summary>
+        void BuildPickerCard()
+        {
+            Panel p = Card2("屏幕取色器",
+                "按下取色快捷键后，鼠标旁边会出现放大镜，点击左键取色，" +
+                "右键或 Esc 取消。取到的颜色会替换当前调色板中选中的那一格，并复制色号。", 190);
+
+            int y = _cardContentTop;
+
+            p.Controls.Add(RowLabel("放大镜大小 (px)", 16, y + 4));
+            _numPickerLoupe = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 60, Maximum = 400, Increment = 10,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numPickerLoupe);
+            y += 40;
+
+            p.Controls.Add(RowLabel("放大倍数", 16, y + 4));
+            _numPickerZoom = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 2, Maximum = 32, Increment = 1,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numPickerZoom);
+
+            _cardContentTop = AddHint(p,
+                "放大镜里每个方块就是屏幕上的一个真实像素，中间十字对准的那个才会被取走。",
+                16, y + 34, CardWidth - 48);
+        }
+
+        /// <summary>
+        /// Opens the app's own full-screen picker for a settings swatch. Reusing
+        /// the real picker keeps one sampling implementation, and it is far more
+        /// usable than typing hex for a colour the user is looking at.
+        /// </summary>
+        void PickColorFor(Button target)
+        {
+            Rectangle vs = Native.VirtualScreen();
+            Bitmap frozen = Native.CaptureRegion(vs);
+            if (frozen == null) { Warn("无法截取屏幕，请手动输入色号。"); return; }
+
+            Color current;
+            if (!Beautifier.TryParseColor(target.Text, out current)) current = Color.White;
+
+            Color picked;
+            using (ColorPickerForm picker = new ColorPickerForm(_draft, vs, frozen, true))
+            {
+                picker.ShowDialog(this);
+                picked = picker.PickedColor;
+            }
+            if (!picked.IsEmpty) target.Text = Beautifier.FormatColor(picked);
         }
 
         void BuildGeneralPage()
         {
             NewPage("常规");
 
-            Panel g = Card2("启动与后台", "", 210);
+            Panel g = Card2("启动与后台", "", 120);
 
             int y = _cardContentTop;
             _chkStartup = new CheckBox
@@ -2004,6 +2299,8 @@ namespace ScreenPen
             _hkLive.Text = _draft.LiveZoomKey;
             _hkShot.Text = _draft.ScreenshotKey;
             _hkCopyShot.Text = _draft.CopyShotKey;
+            _hkWindowShot.Text = _draft.WindowShotKey;
+            _hkPicker.Text = _draft.ColorPickerKey;
             _hkZoomIn.Text = _draft.ZoomInKey;
             _hkZoomOut.Text = _draft.ZoomOutKey;
 
@@ -2015,10 +2312,13 @@ namespace ScreenPen
             _hkText.Text = _draft.TextKey;
             _hkMosaic.Text = _draft.MosaicKey;
             _hkSpotlight.Text = _draft.SpotlightKey;
+            _hkHighlighter.Text = _draft.HighlighterKey;
+            _hkStep.Text = _draft.StepKey;
 
             _hkClear.Text = _draft.ClearKey;
             _hkFollow.Text = _draft.FollowKey;
             _hkUndo.Text = _draft.UndoKey;
+            _hkRedo.Text = _draft.RedoKey;
             _hkSave.Text = _draft.SaveKey;
             _hkCopy.Text = _draft.CopyKey;
 
@@ -2040,6 +2340,22 @@ namespace ScreenPen
             _chkModTab.Checked = _draft.ModTabEllipse;
             _chkModShift.Checked = _draft.ModShiftLine;
             _chkModCtrlShift.Checked = _draft.ModCtrlShiftArrow;
+
+            // Tier-1 controls.
+            _numHighlightAlpha.Value = Clamp(_draft.HighlighterAlpha, _numHighlightAlpha);
+            _cmbArrowStyle.SelectedIndex = Math.Max(0, Math.Min(2, _draft.ArrowStyleIndex));
+            _numStepBadge.Value = Clamp((decimal)_draft.StepBadgeSize, _numStepBadge);
+            _chkStepPersistent.Checked = _draft.StepNumberPersistent;
+
+            _chkBeautify.Checked = _draft.BeautifyEnabled;
+            _numBeautifyPad.Value = Clamp(_draft.BeautifyPadding, _numBeautifyPad);
+            _numBeautifyRadius.Value = Clamp(_draft.BeautifyRadius, _numBeautifyRadius);
+            _chkBeautifyShadow.Checked = _draft.BeautifyShadow;
+            _btnBeautifyColor1.Text = _draft.BeautifyColor1;
+            _btnBeautifyColor2.Text = _draft.BeautifyColor2;
+
+            _numPickerLoupe.Value = Clamp(_draft.PickerLoupeSize, _numPickerLoupe);
+            _numPickerZoom.Value = Clamp(_draft.PickerZoom, _numPickerZoom);
 
             _chkMagnifier.Checked = _draft.MagnifierDuringLiveZoom;
             _numStep.Value = Clamp(_draft.ZoomStepPercent, _numStep);
@@ -2239,6 +2555,8 @@ namespace ScreenPen
             _draft.LiveZoomKey = _hkLive.Text.Trim();
             _draft.ScreenshotKey = _hkShot.Text.Trim();
             _draft.CopyShotKey = _hkCopyShot.Text.Trim();
+            _draft.WindowShotKey = _hkWindowShot.Text.Trim();
+            _draft.ColorPickerKey = _hkPicker.Text.Trim();
             _draft.ZoomInKey = _hkZoomIn.Text.Trim();
             _draft.ZoomOutKey = _hkZoomOut.Text.Trim();
 
@@ -2250,10 +2568,13 @@ namespace ScreenPen
             _draft.TextKey = _hkText.Text.Trim();
             _draft.MosaicKey = _hkMosaic.Text.Trim();
             _draft.SpotlightKey = _hkSpotlight.Text.Trim();
+            _draft.HighlighterKey = _hkHighlighter.Text.Trim();
+            _draft.StepKey = _hkStep.Text.Trim();
 
             _draft.ClearKey = _hkClear.Text.Trim();
             _draft.FollowKey = _hkFollow.Text.Trim();
             _draft.UndoKey = _hkUndo.Text.Trim();
+            _draft.RedoKey = _hkRedo.Text.Trim();
             _draft.SaveKey = _hkSave.Text.Trim();
             _draft.CopyKey = _hkCopy.Text.Trim();
 
@@ -2274,6 +2595,22 @@ namespace ScreenPen
             _draft.ModTabEllipse = _chkModTab.Checked;
             _draft.ModShiftLine = _chkModShift.Checked;
             _draft.ModCtrlShiftArrow = _chkModCtrlShift.Checked;
+
+            // Tier-1 controls.
+            _draft.HighlighterAlpha = (int)_numHighlightAlpha.Value;
+            _draft.ArrowStyleIndex = Math.Max(0, _cmbArrowStyle.SelectedIndex);
+            _draft.StepBadgeSize = (float)_numStepBadge.Value;
+            _draft.StepNumberPersistent = _chkStepPersistent.Checked;
+
+            _draft.BeautifyEnabled = _chkBeautify.Checked;
+            _draft.BeautifyPadding = (int)_numBeautifyPad.Value;
+            _draft.BeautifyRadius = (int)_numBeautifyRadius.Value;
+            _draft.BeautifyShadow = _chkBeautifyShadow.Checked;
+            _draft.BeautifyColor1 = _btnBeautifyColor1.Text.Trim();
+            _draft.BeautifyColor2 = _btnBeautifyColor2.Text.Trim();
+
+            _draft.PickerLoupeSize = (int)_numPickerLoupe.Value;
+            _draft.PickerZoom = (int)_numPickerZoom.Value;
 
             _draft.RegionDimOutside = _chkRegionDim.Checked;
             _draft.RegionShowSize = _chkRegionSize.Checked;

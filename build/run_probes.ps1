@@ -17,13 +17,14 @@ $srcs = @(
   'src\Config.cs', 'src\SettingsStore.cs', 'src\Native.cs', 'src\OverlayForm.cs'
   'src\BrushCursor.cs', 'src\RegionSelectForm.cs', 'src\AppContext2.cs'
   'src\SettingsForm.cs', 'src\Shell.cs', 'src\PinForm.cs'
+  'src\Beautifier.cs', 'src\ColorPickerForm.cs'
 )
 
 $probes = @(
   'tools_probe', 'brush_probe', 'region_probe', 'hotkey_conflict_probe'
   'smooth_probe', 'follow_probe', 'footer_probe', 'layout_probe', 'measure_ui'
   'hotkey_record_probe', 'text_focus_probe', 'hostile_focus_probe', 'pin_probe'
-  'typing_probe', 'measure_toolbar'
+  'typing_probe', 'measure_toolbar', 'tier1_probe', 'layout_cards'
 )
 
 $failed = @()

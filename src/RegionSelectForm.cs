@@ -83,6 +83,39 @@ namespace ScreenPen
         static readonly Color PanelBorder = Color.FromArgb(255, 90, 97, 112);
         static readonly Color TextMain = Color.FromArgb(255, 240, 242, 245);
 
+        // Cached soft shadow behind the action toolbar. Built once per panel
+        // size; the toolbar only changes size when the window or DPI does.
+        Bitmap _toolbarShadow;
+        Size _toolbarShadowKey = Size.Empty;
+        int _toolbarShadowRadius = -1;
+
+        /// <summary>
+        /// Draws the toolbar's cached shadow. The toolbar floats over a frozen
+        /// screenshot, so without this it reads as pasted-on rather than lifted
+        /// above the content - and on a light screenshot the dark panel has no
+        /// perceptible edge at all.
+        /// </summary>
+        void DrawToolbarShadow(Graphics g, Rectangle bounds, float radius)
+        {
+            Size key = new Size(bounds.Width, bounds.Height);
+            if (_toolbarShadow == null || _toolbarShadowKey != key ||
+                _toolbarShadowRadius != (int)radius)
+            {
+                if (_toolbarShadow != null) { _toolbarShadow.Dispose(); _toolbarShadow = null; }
+                _toolbarShadow = OverlayForm.BuildPanelShadow(bounds.Width, bounds.Height, radius);
+                if (_toolbarShadow != null)
+                {
+                    _toolbarShadowKey = key;
+                    _toolbarShadowRadius = (int)radius;
+                }
+            }
+            if (_toolbarShadow == null) return;
+
+            g.DrawImageUnscaled(_toolbarShadow,
+                bounds.X - OverlayForm.PanelShadowSpread,
+                bounds.Y - OverlayForm.PanelShadowSpread);
+        }
+
         public RegionAction ActionTaken { get { return _action; } }
 
         /// <summary>The chosen region in screen coordinates.</summary>
@@ -377,6 +410,8 @@ namespace ScreenPen
                 Rectangle.Union(_btnSave, _btnCopy),
                 Rectangle.Union(_btnPin, _btnCancel));
             bounds.Inflate(ToolbarPad(), ToolbarPad());
+
+            DrawToolbarShadow(g, bounds, 9);
 
             using (GraphicsPath path = OverlayForm.RoundRect(
                        new RectangleF(bounds.X, bounds.Y, bounds.Width, bounds.Height), 9))
@@ -758,6 +793,7 @@ namespace ScreenPen
             {
                 if (_fontBtn != null) { _fontBtn.Dispose(); _fontBtn = null; }
                 if (_fontBtnBold != null) { _fontBtnBold.Dispose(); _fontBtnBold = null; }
+                if (_toolbarShadow != null) { _toolbarShadow.Dispose(); _toolbarShadow = null; }
             }
             base.Dispose(disposing);
         }

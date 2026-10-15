@@ -225,7 +225,20 @@ class HotkeyConflictProbe
         SettingsForm f6 = Make(new Settings(), p6);
         var boxes = KeyBoxes(f6);
         Console.WriteLine("        key boxes found: " + boxes.Count);
-        Check("all 19 key rows are registered", boxes.Count == 19);
+
+        // Compare the boxes found in the control tree against the form's own
+        // binding list rather than a hard-coded number. A literal count (this
+        // was 19) breaks every time a rebindable key is added, and it would not
+        // catch the real defect it is meant to guard: a row built in the UI but
+        // never added to _bindings, which is silently excluded from both the
+        // live readout and the save-time conflict check.
+        var bindings = (System.Collections.ICollection)typeof(SettingsForm)
+            .GetField("_bindings", BindingFlags.Instance | BindingFlags.NonPublic)
+            .GetValue(f6);
+        Console.WriteLine("        bindings registered: " + bindings.Count);
+        Check("every key row is registered in _bindings",
+              boxes.Count == bindings.Count);
+        Check("the dialog has a non-trivial number of key rows", boxes.Count >= 19);
 
         // Make two distinct clashes and confirm each row's readout is non-clean
         // exactly when that row shares its key with another row.

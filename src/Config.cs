@@ -21,7 +21,26 @@ namespace ScreenPen
         /// <summary>Drag a rectangle whose contents are pixelated.</summary>
         Mosaic = 6,
         /// <summary>Dim everything outside an ellipse to highlight an area.</summary>
-        Spotlight = 7
+        Spotlight = 7,
+        /// <summary>
+        /// Semi-transparent marker pen. Unlike the other tools its alpha is
+        /// independent of the colour, so overlapping passes build up instead of
+        /// punching a hole in the backdrop.
+        /// </summary>
+        Highlighter = 8,
+        /// <summary>Click to drop an auto-incrementing numbered badge.</summary>
+        StepNumber = 9
+    }
+
+    /// <summary>Arrow head/body shape for <see cref="Tool.Arrow"/>.</summary>
+    public enum ArrowStyle
+    {
+        /// <summary>Straight shaft with a solid triangular head (original).</summary>
+        Straight = 0,
+        /// <summary>Quadratic curve through the drag midpoint.</summary>
+        Curved = 1,
+        /// <summary>Two-segment shaft with a right-angle bend.</summary>
+        Elbow = 2
     }
 
     /// <summary>
@@ -52,6 +71,26 @@ namespace ScreenPen
 
         /// <summary>Whether the text is drawn with a contrasting outline.</summary>
         public bool TextShadow = true;
+
+        /// <summary>
+        /// Shaft shape for arrow strokes. Only meaningful when
+        /// <see cref="Tool"/> is <see cref="Tool.Arrow"/>.
+        /// </summary>
+        public ArrowStyle Arrow = ArrowStyle.Straight;
+
+        /// <summary>
+        /// Marker opacity 0..255 for <see cref="Tool.Highlighter"/>. Kept
+        /// separate from <see cref="Color"/>'s alpha because the palette stores
+        /// opaque colours and the marker needs its own constant transparency.
+        /// </summary>
+        public int HighlightAlpha = 90;
+
+        /// <summary>
+        /// Badge number for <see cref="Tool.StepNumber"/>. Assigned when the
+        /// stroke is created and never recomputed, so deleting an earlier badge
+        /// does not renumber the ones after it.
+        /// </summary>
+        public int StepIndex;
     }
 
     /// <summary>
@@ -95,6 +134,16 @@ namespace ScreenPen
         public string SpotlightKey = "K";
         /// <summary>Toggles scroll-follow (live document) mode while annotating.</summary>
         public string FollowKey = "F";
+        /// <summary>Marker-pen tool.</summary>
+        public string HighlighterKey = "H";
+        /// <summary>Numbered step-badge tool.</summary>
+        public string StepKey = "N";
+        /// <summary>Redo the last undone stroke.</summary>
+        public string RedoKey = "Ctrl+Y";
+        /// <summary>Screen colour picker (copies the pixel under the pointer).</summary>
+        public string ColorPickerKey = "Ctrl+Alt+P";
+        /// <summary>Capture the window under the pointer.</summary>
+        public string WindowShotKey = "Ctrl+Alt+W";
 
         public int PenWidth = 3;
         public int MinPenWidth = 1;
@@ -148,6 +197,40 @@ namespace ScreenPen
         public bool ShowBrushCursor = true;
         /// <summary>On-screen size of the brush cursor, in pixels.</summary>
         public int BrushCursorSize = 40;
+
+        // ---- highlighter / step badges ---------------------------------------
+        /// <summary>Marker opacity 0..255. Applied to every highlighter stroke.</summary>
+        public int HighlighterAlpha = 90;
+        /// <summary>Arrow shaft style used by new arrow strokes.</summary>
+        public int ArrowStyleIndex = 0;
+        /// <summary>Badge diameter in screen pixels, for step-number strokes.</summary>
+        public float StepBadgeSize = 34f;
+        /// <summary>
+        /// Continue badge numbering across separate screenshots. When false the
+        /// counter restarts at 1 every time the overlay is activated - which is
+        /// what ShareX does, and what its users asked to change (issue #8033).
+        /// </summary>
+        public bool StepNumberPersistent = true;
+
+        // ---- beautify --------------------------------------------------------
+        /// <summary>Add padding/shadow/rounded corners/background when saving.</summary>
+        public bool BeautifyEnabled = false;
+        /// <summary>Padding around the screenshot, in pixels.</summary>
+        public int BeautifyPadding = 48;
+        /// <summary>Corner radius of the screenshot card, in pixels.</summary>
+        public int BeautifyRadius = 16;
+        /// <summary>Draw a drop shadow behind the card.</summary>
+        public bool BeautifyShadow = true;
+        /// <summary>Gradient background start (top-left) colour.</summary>
+        public string BeautifyColor1 = "#6D5BFF";
+        /// <summary>Gradient background end (bottom-right) colour.</summary>
+        public string BeautifyColor2 = "#22B8CF";
+
+        // ---- colour picker ---------------------------------------------------
+        /// <summary>Loupe size in pixels while picking a colour.</summary>
+        public int PickerLoupeSize = 150;
+        /// <summary>Zoom factor of the colour-picker loupe.</summary>
+        public int PickerZoom = 8;
 
         // ---- scroll-follow mode ---------------------------------------------
         /// <summary>
@@ -241,6 +324,28 @@ namespace ScreenPen
             if (BrushCursorSize < 16) BrushCursorSize = 16;
             if (BrushCursorSize > 128) BrushCursorSize = 128;
 
+            if (HighlighterAlpha < 16) HighlighterAlpha = 16;
+            if (HighlighterAlpha > 220) HighlighterAlpha = 220;
+            if (ArrowStyleIndex < 0) ArrowStyleIndex = 0;
+            if (ArrowStyleIndex > 2) ArrowStyleIndex = 2;
+            if (StepBadgeSize < 16f) StepBadgeSize = 16f;
+            if (StepBadgeSize > 120f) StepBadgeSize = 120f;
+
+            if (BeautifyPadding < 0) BeautifyPadding = 0;
+            if (BeautifyPadding > 400) BeautifyPadding = 400;
+            if (BeautifyRadius < 0) BeautifyRadius = 0;
+            if (BeautifyRadius > 200) BeautifyRadius = 200;
+            // An unparsable colour would throw inside the beautifier, so fall
+            // back to the shipped gradient rather than trusting the file.
+            Color tmp;
+            if (!TryParseColor(BeautifyColor1, out tmp)) BeautifyColor1 = "#6D5BFF";
+            if (!TryParseColor(BeautifyColor2, out tmp)) BeautifyColor2 = "#22B8CF";
+
+            if (PickerLoupeSize < 60) PickerLoupeSize = 60;
+            if (PickerLoupeSize > 400) PickerLoupeSize = 400;
+            if (PickerZoom < 2) PickerZoom = 2;
+            if (PickerZoom > 32) PickerZoom = 32;
+
             // A blank tool key would make that tool unreachable, so restore the
             // shipped default rather than silently disabling the tool.
             Settings def = null;
@@ -254,6 +359,11 @@ namespace ScreenPen
             if (string.IsNullOrWhiteSpace(SpotlightKey)) { def = def ?? new Settings(); SpotlightKey = def.SpotlightKey; }
             if (string.IsNullOrWhiteSpace(CopyShotKey)) { def = def ?? new Settings(); CopyShotKey = def.CopyShotKey; }
             if (string.IsNullOrWhiteSpace(FollowKey)) { def = def ?? new Settings(); FollowKey = def.FollowKey; }
+            if (string.IsNullOrWhiteSpace(HighlighterKey)) { def = def ?? new Settings(); HighlighterKey = def.HighlighterKey; }
+            if (string.IsNullOrWhiteSpace(StepKey)) { def = def ?? new Settings(); StepKey = def.StepKey; }
+            if (string.IsNullOrWhiteSpace(RedoKey)) { def = def ?? new Settings(); RedoKey = def.RedoKey; }
+            if (string.IsNullOrWhiteSpace(ColorPickerKey)) { def = def ?? new Settings(); ColorPickerKey = def.ColorPickerKey; }
+            if (string.IsNullOrWhiteSpace(WindowShotKey)) { def = def ?? new Settings(); WindowShotKey = def.WindowShotKey; }
         }
 
         /// <summary>
@@ -270,6 +380,8 @@ namespace ScreenPen
             if (MatchesToolKey(TextKey, code)) return Tool.Text;
             if (MatchesToolKey(MosaicKey, code)) return Tool.Mosaic;
             if (MatchesToolKey(SpotlightKey, code)) return Tool.Spotlight;
+            if (MatchesToolKey(HighlighterKey, code)) return Tool.Highlighter;
+            if (MatchesToolKey(StepKey, code)) return Tool.StepNumber;
             return null;
         }
 
