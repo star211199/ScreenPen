@@ -3,7 +3,7 @@
 一个绿色免安装的屏幕标注工具：**实时画笔 + 区域截图 + 桌面贴图 + 实时缩放 + 标注跟随滚动**。
 双击即用，无外部依赖，不写注册表（开机自启除外）。
 
-- 程序文件：`dist\ScreenPen.exe`（241 KB，单文件）
+- 程序文件：`dist\ScreenPen.exe`（243 KB，单文件）
 - 配置文件：`dist\ScreenPen.settings.json`（与 EXE 同目录，绿色便携，49 个键）
 
 ---
@@ -491,7 +491,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 ### 自动化测试
 
-**一条命令跑完全部 14 个进程内探针**（推荐）：
+**一条命令跑完全部 15 个进程内探针**（推荐）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\run_probes.ps1

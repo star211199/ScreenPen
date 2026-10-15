@@ -5,9 +5,9 @@
 >
 > 最后更新：本轮（**贴图（钉在桌面）+ 设置窗口可调整大小 + 输入框抢键 BUG + 12 项安全/稳定性加固**，
 > 见 §1.5 与 §5.0）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，246,784 bytes（241.0 KB）
-> `sha256 248C179D65299ED4159322047A86AE516939F13BB9840A5F874F11142B85AE44`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（14/14）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，248,832 bytes（243.0 KB）
+> `sha256 76238AA9FC0D7E7BB5571DF3FAD290EED8A304DC64D15F1DC7C0E7A076924F61`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（15/15）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
 > `verify_readme.py` **7/7**、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
 > `verify_resize.py` **9/9**（本轮新增）
@@ -39,7 +39,7 @@ cd ScreenPen
 
 ### 测试
 
-**首选：一条命令跑完全部 14 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 15 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
@@ -441,7 +441,9 @@ if (_overlay.IsEditingText) return;      // AppContext2.cs L331
 的真实窗口断言：样式含 `WS_THICKFRAME`；样式含 `WS_MAXIMIZEBOX`；拉大后客户区确实变大；
 往小里拖被下限夹住；**放大后**页脚三个按钮仍在窗口内、**最小时**仍在窗口内、且没有按钮
 溢出窗口；把窗口调回设计尺寸后能恢复（±2px）。
-→ 前置参考图：`build\shots\20_settings_min.png` / `21_settings_wide.png`。
+→ 前置参考图：`build\featshots\20_settings_min.png` / `21_settings_wide.png`
+（**不要**输出到 `build\shots\`：`verify_ui.py` 会把该目录下所有 PNG 两两做尺寸比对，
+尺寸不同就直接判 FAIL，实测因此产生 15 条假失败）。
 
 #### 1.5.4 安全 / 稳定性加固（审计 12 项）
 
@@ -469,9 +471,11 @@ if (_overlay.IsEditingText) return;      // AppContext2.cs L331
 > - `Config.Clamp()` L244–256：单键字段为空白时从 `new Settings()`（出厂默认）**补回**该键，
 >   而不是静默让那个工具不可达（白名单外的非法赋值同样被挡在 L227–233）。
 
-**验证**：`build\run_probes.ps1` 全绿（**14/14**）。与本节直接相关的两个新探针：
+**验证**：`build\run_probes.ps1` 全绿（**15/15**）。与本节直接相关的三个新探针：
 `pin_probe.cs` → `build\obj\pin_probe.log` **57 `[PASS]`，0 `[FAIL]`**；
-`typing_probe.cs` → `build\obj\typing_probe.log` **19 `[PASS]`，0 `[FAIL]`**。
+`typing_probe.cs` → `build\obj\typing_probe.log` **19 `[PASS]`，0 `[FAIL]`**；
+`measure_toolbar.cs` → `build\obj\measure_toolbar.log` **ALL TOOLBAR MEASUREMENTS PASSED**
+（这条是工具条标签被裁切的回归防线，见 §1.5.5）。
 `pin_probe.cs` 覆盖：选择器工具条 4 个按钮 + `PinToDesktop` 裁切；`PinForm` 几何
 （1.0×/2.0×、下限夹取、上限夹取、40 次往返无漂移、每格 1.12×、光标锚点缩放偏移为 `(0,0)`、
 拖动增量、零距离拖动、关闭按钮尺寸/位于窗内/永不超出缩小后的窗口、`Esc` 关闭、关闭释放位图）；
@@ -481,6 +485,68 @@ if (_overlay.IsEditingText) return;      // AppContext2.cs L331
 
 > ⚠️ 探针断言条数以 `build\obj\*.log` 里的 `[PASS]` 行数为准（`pin_probe` 57 条、
 > `typing_probe` 19 条）。**不要**把这里的数字当成固定不变量——加断言时它就会变。
+
+#### 1.5.5 【BUG】框选工具条在高 DPI 下把按钮标签裁掉（验证阶段发现的真实缺陷）
+
+**不是**用户报的四条之一，是给上面四条做可视化验证时**新发现的既有缺陷**，
+而且是**从加第 4 个按钮（贴图）之前就存在**的——第 4 个按钮只是让它更明显。
+
+**症状**（本机 200% 缩放，即 192 DPI）：框选时工具条上四个按钮只显示
+`保存` / `复制 (` / `贴图 (` / `取消 (E`——除裸 `保存` 外**全部被截断**。
+
+**根因**：`RegionSelectForm.LayoutToolbar()` 用的是**硬编码像素常量**
+`const int BtnW = 84, BtnH = 32, BtnPad = 8;`，而字体是**固定点数**
+`new Font("Microsoft YaHei UI", 8.6f, ...)`。点数会随 DPI 放大，像素常量不会，
+于是 192 DPI 下 8.6pt 的中文字高约 30px、`复制 (Ctrl+C)` 实measure **153px**，
+塞进 84px 的按钮必然溢出。这与 `SettingsForm` 形成对比——后者有显式的
+`ApplyDpiScale()` / `ScaleSize()` 路径。
+
+**为什么老探针没抓到**：`pin_probe.cs` 与 `region_probe.cs` 只断言了
+「按钮非零、互不重叠、在窗口内」——**从来没有断言过文字装得下**。
+几何全对，标签全被裁掉，两者并不矛盾。
+
+**修法**（`src\RegionSelectForm.cs`）：
+- 新增 `DpiScale()`（`CreateGraphics().DpiX / 96f`，夹在 `0.1..8`），**按窗口实测 DPI**，
+  不依赖进程 awareness 上下文是否设过；
+- `BtnPad` / `BtnH` 乘 `DpiScale()`；
+- **每个按钮宽度由自己的标签量出来**：`MeasureLabel()` =
+  `TextRenderer.MeasureText(text, font, ..., TextFormatFlags.NoPadding).Width + BtnInnerPad*2`，
+  下限 `BtnMinWidth = 46`；
+- 三级降级：① 整行装不下 → 换**短标签**（`保存` / `复制` / `贴图` / `取消`）；
+  ② 还装不下 → 按最宽按钮**等比例整体收窄**；③ 极端小窗 → 四个等宽，
+  保证算术一定落在窗内；
+- 绘制端 `DrawToolbarButton()` 把绘制区**裁到按钮矩形**并用
+  `StringTrimming.EllipsisCharacter` + `NoWrap` 兜底，绝不外溢到邻居；
+- **单一事实来源**：`LayoutToolbar()` 把量过的标签存进 `_btnLabels`，
+  `DrawToolbar()` 就画这组（不再是各自调 `SaveLabel()` 各算一遍），
+  绘制与测量不可能再分歧；
+- 字体对象缓存到 `_fontBtn` / `_fontBtnBold`（原来每帧 `new Font` 一次），
+  新增 `Dispose(bool)` 释放；
+- 新增测试接缝 `ToolbarLabelsForTest` / `ToolbarShrunkForTest` / `*LabelForTest`。
+
+**证据**：
+- `build\measure_toolbar.cs`（**新增**，155 行）→ 5 种桌面宽度（2880/1920/1280/900/640）
+  × 3 种默认动作 = 15 组，逐标签量 `TextRenderer.MeasureText` 并和真实按钮宽度比。
+  修前 **10 FAIL**（`保存 (Enter)` 需 140px vs 84px 等）；修后
+  **ALL TOOLBAR MEASUREMENTS PASSED**。它还断言「≥1280px 的桌面**永远不收缩**行」，
+  这条正是本次缺陷的回归防线。
+- **已加入 `build\run_probes.ps1`**，所以探针总数 14 → **15**，以后自动跑。
+- 人眼确认：`build\obj\render_pin.exe` 重渲染 `build\shots\render\35_selector_2880.png`，
+  裁 `(1660,615)-(2350,745)` 放大 2× —— 四个标签完整显示，
+  工具条从 376×48 变成 636×96。
+- `pin_probe` / `region_probe` 修改后仍然全绿。
+
+#### 1.5.6 顺带修掉的测试假失败（`verify_upgrade.py` 马赛克检查不稳定）
+
+`build\verify_upgrade.py` 的马赛克断言**硬编码**屏幕点 `(1300, 700)`，并在注释里写
+"Measured texture at (1300,700) is 0.96"——**这个数字是错的/早已过期**。马赛克把每个
+块换成平均值，所以**在平坦区域上输出与输入逐像素相同**（这是设计如此），
+像素差就是 `0.00%`，于是「马赛克坏了」是假失败。实测同一坐标两次跑分别是
+texture `0.023` 和 `0.052`、diff `0.00%`，**取决于当时那个位置恰好是哪个窗口**。
+
+**修法**：新增 `pick_textured_region(grab, w, h, min_texture=0.15)`，
+运行时扫 160px 网格挑最有纹理的区域；纹理不够就**明确打印跳过原因**而不是报假失败。
+现在稳定拿到 texture `0.988`、diff `6.51%`，连跑两次结果一致。
 
 ---
 
@@ -910,10 +976,10 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (14/14)** | 编译并运行下面 14 个进程内探针，逐个打印 PASS/FAIL |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (15/15)** | 编译并运行下面 15 个进程内探针，逐个打印 PASS/FAIL |
 | `build\hotkey_conflict_probe.cs` | 进程内 | **29/29 PASS** | 快捷键冲突 UX（含 `PromptOverride`） |
 | `build\region_probe.cs` | 进程内 | **PASS** | 区域截图、裁剪、剪贴板、保存、取消 |
-| `build\follow_probe.cs` | 进程内 | **24/24 PASS** | 滚动跟随（算法层 + F 集成层 + 滚轮路由） |
+| `build\follow_probe.cs` | 进程内 | **26 `[PASS]` / 0 `[FAIL]`** | 滚动跟随（算法层 + F 集成层 + 滚轮路由 + 空闲退出 + 拒绝理由） |
 | `build\tools_probe.cs` | 进程内 | **PASS** | 工具、修饰键、渲染、点数断言 |
 | `build\brush_probe.cs` | 进程内 | **PASS** | 画笔光标 SVG |
 | `build\smooth_probe.cs` | 进程内 | **14/14 PASS** | 画笔平滑：折线 vs 样条面数、`Densify` 间隙 |
@@ -957,7 +1023,34 @@ Accent   = RGB(232, 160, 0)
 
 ## 5. 历次会话新增/修改的文件
 
-### 5.0 上一轮会话（7 项需求验收 + 两个真实 BUG 修复）
+> 按**倒序**排列：`5.0` 是本轮，越往后越早。
+
+### 5.0 本轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
+
+| 文件 | 变更 |
+|---|---|
+| `src\PinForm.cs` | **新增（第 11 个源文件）**，629 行。无边框置顶贴图窗口：拖动、滚轮等比缩放（锚点跟随光标）、悬停关闭按钮、右键关闭、`Esc` 关闭、`Ctrl+C` 复制、`Ctrl+S` 另存（PNG/JPG/BMP，JPG/BMP 在 `Color.Black` 上拍平成 `Format24bppRgb`）；`MinScale=0.1f` / `MaxScale=8.0f` / `MinVisible=40`；`_baseSize` 原始尺寸 + `_scale`，`ScaledSizeFor` 每次从原始尺寸重算（**绝不用 `Form.Scale`**）；`Dispose(bool)` 只在 `disposing == true` 时释放 `_image`；`ShowTip` 用 `ToolTip` 代替 `MessageBox`；测试缝 `TestScale`/`TestBaseSize`/`TestImage`/`TestIsClosed`/`IsClosed`/`TestSetScale`/`TestWheelZoom`/`TestDragBy` |
+| `src\RegionSelectForm.cs` | `enum RegionAction` 追加 **`PinToDesktop = 3`**（`0/1/2` 不变）；工具条 3 按钮 → **4 按钮**（`_btnPin`），标签 `贴图 (Enter)` / `贴图 (P)`；`OnKeyDown` 增加裸 `P`（**放在 `Ctrl` 分支之后**，避免遮蔽将来的 `Ctrl+P`）；`OnMouseDown` 命中 `_btnPin`；`DrawToolbar` 的强调色跟随 `_defaultAction`。另含遗留的 DPI 化改造：`DpiScale()` / `BtnFont()` / `BtnInnerPad` / `BtnMinWidth` / `LayoutToolbar()` 三步收缩（长标签 → 短标签 → 等比缩小 → 等宽兜底）、`_btnLabels` / `_btnShrunk` 供探针量真实字串 |
+| `src\AppContext2.cs` | 托盘新增 **区域截图并钉在桌面**（`RegionScreenshot(RegionAction.PinToDesktop)`）；`_pins` 列表 + `PinScreenshot()` + `PinFormClosed()` + **`CloseAllPins()`**（`ToArray()` 快照遍历，`Quit()` 与 `Dispose(bool)` 都调用）；**`OverlayKeyDown` 最前面加 `if (_overlay.IsEditingText) return;`**（打字抢键 BUG 的修复点）；`ReportHotkeyProblems()` + `_failedHotkeys`；`SettingsStore.Save` 返回值检查 → 气球提示"设置保存失败"；`CopyToClipboard` 的暂存位图改用 `using` |
+| `src\OverlayForm.cs` | `MaxStrokePoints = 20000` 上限 + `MinSampleDist = 1.5f` 抖动去重；`DenseEntry` / `_denseCache` / `DensifiedFor()` / `InvalidateDensifyCache()` 渲染期缓存；`ReleaseBrushPointer()` 修 GDI 泄漏；`ProcessCmdKey` 里 `_textEditor != null` 时放行 `Tab`（否则 `_tabHeld` 闩死，下一次拖动变椭圆）；`DrawMosaic` 的 `raw` 位图提升到 `finally` 释放；`StartScrollFollow` 检查 `SetExcludedFromCapture` 返回值 |
+| `src\SettingsForm.cs` | `FormBorderStyle` → **`Sizable`** + `MaximizeBox` / `MinimizeBox`；**新增 `ApplyMinimumSize()`**（`MinClientWidth = 560` / `MinClientHeight = 460` × DPI + 非客户区边框）；`ScaleSize()`；`OnResize` → `LayoutFooter()` + `RefreshScrollExtents()`（`_ready` 门控）；`DialogWidth` 1180 / `DialogHeight` 830 |
+| `src\SettingsStore.cs` | `Save()` 改为**原子写**：先写 `.tmp`，再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`），失败删 tmp 并返回 `false` |
+| `src\Config.cs` | `Clamp()` 里 **`ScreenshotFormat` 白名单**（去空白 / 去前导 `.` / 小写 / `jpeg → jpg` / 只允许 `png`-`jpg`-`bmp`，否则回退 `png`）；空白单键字段用 `new Settings()` 的出厂值补回 |
+| `src\Shell.cs` | `IconFromBytes` / `GenerateFallback` 里的 `Icon.FromHandle(...)` 改为 `Clone()` + `finally { DestroyIcon(h); }` |
+| `src\Program.cs` | `ReportCrash()` 在弹框前遍历 `Application.OpenForms` 逐个 `TopMost = false`，并用 `MessageBoxOptions.DefaultDesktopOnly` |
+| `build\run_probes.ps1` | 探针数 12 → **15**（加入 `pin_probe` / `typing_probe` / `measure_toolbar`）；`$srcs` 加入 `src\PinForm.cs` |
+| `build\pin_probe.cs` | **新增**，444 行 / 19,850 bytes。覆盖面见 §1.5.4 末（57 条断言） |
+| `build\typing_probe.cs` | **新增**，262 行 / 11,435 bytes。驱动 `Keys.L/P/O/E/A/B/D1/M/R/T/F/D0` + `Tab` + 真 `WM_CHAR` |
+| `build\verify_resize.py` | **新增**，206 行 / 6,596 bytes，跨进程 9 项断言真实 EXE 的窗口样式与页脚布局 |
+| `build\measure_toolbar.cs` | **新增**，155 行。量框选工具条 4 个按钮的真实标签/宽度/是否收缩，**已被加入 `run_probes.ps1`**（跨 5 种桌面宽度 × 3 种默认动作） |
+| `build\render_pin.cs` | **新增**，179 行。渲染贴图窗口 PNG → `build\shots\render\30_pin_idle.png` … `35_selector_*.png`，**供人眼确认** |
+| `build\capture_new_features.py` | **新增**，337 行。跨进程截图本轮的新界面：`build\featshots\20_settings_min.png` / `21_settings_wide.png` / `22_pin_window.png`。**不要**输出到 `build\shots\`：`verify_ui.py` 会对该目录下所有 PNG 两两做尺寸比对，尺寸不同即判 FAIL（实测产生 15 条假失败） |
+| `README.md` | EXE 体积 230 KB → **243 KB**；新增 **贴图** 章节 + 托盘项 + 设置页"窗口大小可以自己调" + 4 条 FAQ；源码结构表 10 → **11** 行；探针数 9 → **15**；注明打字时单键命令会让位给输入框 |
+| `HANDOVER.md` | **本节 + §1.5（四条改动的根因/改法/证据 + 12 项审计表）+ §3.2/§3.3/§3.6 约束补充 + §4 测试清单刷新 + §5 倒序重排 + §6 收尾 + 头部版本信息** |
+
+> 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
+
+### 5.1 上一轮会话（7 项需求验收 + 两个真实 BUG 修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -973,7 +1066,7 @@ Accent   = RGB(232, 160, 0)
 | `README.md` | EXE 体积 229 KB → **230 KB**；新增"程序已在运行时再双击 EXE 会弹出设置窗口"；修正文字标注的按键说明（`Enter` 确认 / `Esc` 取消，原文错写成 `Esc` 确认） |
 | `HANDOVER.md` | 本节 + §2.5 陷阱表 + §4 测试资产清单刷新 |
 
-### 5.1 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
+### 5.2 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
 
 | 文件 | 变更 |
 |---|---|
@@ -982,7 +1075,7 @@ Accent   = RGB(232, 160, 0)
 | `src\AppContext2.cs` | F 键先读 `FollowUnavailableReason()` 再 `ToggleScrollFollow()`，据此给气球提示 |
 | `build\run_probes.ps1` | **新增**，一条命令跑完全部探针；FAIL 扫描用 `-CaseSensitive`；完整日志落 `build\obj\<probe>.log` |
 | `build\smooth_probe.cs` | **新增**，14 项 |
-| `build\follow_probe.cs` | 从 18 项扩到 **24 项**（F 集成层、滚轮路由、空闲退出） |
+| `build\follow_probe.cs` | 从 18 项扩到 **24 项**（F 集成层、滚轮路由、空闲退出）。后续又加了 2 项拒绝理由断言，现为 **26 项** |
 | `build\footer_probe.cs` | **新增**，12 项 |
 | `build\layout_probe.cs` | **新增**，4 项（含 0 个 Label 被裁） |
 | `build\measure_ui.cs` | **新增**，缩放后真实几何断言 |
@@ -996,32 +1089,7 @@ Accent   = RGB(232, 160, 0)
 | `build\hotkey_conflict_probe.cs` | **新增**，29 项断言 |
 | `build\diag_prompt.py` | **新增**，验证确认框可观测（含 `finally` 还原） |
 | `build\verify_hotkeys.py` | 改用 `PostMessageW`、新增"确认框说明冲突"断言、新增"设置已精确还原"断言、新增 `WM_COMMAND`/`IDYES` |
-| `build\obj\pristine.settings.json` | **新增**，出厂基线快照 |
-
-### 5.4 本轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
-
-| 文件 | 变更 |
-|---|---|
-| `src\PinForm.cs` | **新增（第 11 个源文件）**，629 行。无边框置顶贴图窗口：拖动、滚轮等比缩放（锚点跟随光标）、悬停关闭按钮、右键关闭、`Esc` 关闭、`Ctrl+C` 复制、`Ctrl+S` 另存（PNG/JPG/BMP，JPG/BMP 在 `Color.Black` 上拍平成 `Format24bppRgb`）；`MinScale=0.1f` / `MaxScale=8.0f` / `MinVisible=40`；`_baseSize` 原始尺寸 + `_scale`，`ScaledSizeFor` 每次从原始尺寸重算（**绝不用 `Form.Scale`**）；`Dispose(bool)` 只在 `disposing == true` 时释放 `_image`；`ShowTip` 用 `ToolTip` 代替 `MessageBox`；测试缝 `TestScale`/`TestBaseSize`/`TestImage`/`TestIsClosed`/`IsClosed`/`TestSetScale`/`TestWheelZoom`/`TestDragBy` |
-| `src\RegionSelectForm.cs` | `enum RegionAction` 追加 **`PinToDesktop = 3`**（`0/1/2` 不变）；工具条 3 按钮 → **4 按钮**（`_btnPin`），标签 `贴图 (Enter)` / `贴图 (P)`；`OnKeyDown` 增加裸 `P`（**放在 `Ctrl` 分支之后**，避免遮蔽将来的 `Ctrl+P`）；`OnMouseDown` 命中 `_btnPin`；`DrawToolbar` 的强调色跟随 `_defaultAction`。另含上一轮遗留的 DPI 化改造：`DpiScale()` / `BtnFont()` / `BtnInnerPad` / `BtnMinWidth` / `LayoutToolbar()` 三步收缩（长标签 → 短标签 → 等比缩小 → 等宽兜底）、`_btnLabels` / `_btnShrunk` 供探针量真实字串 |
-| `src\AppContext2.cs` | 托盘新增 **区域截图并钉在桌面**（`RegionScreenshot(RegionAction.PinToDesktop)`）；`_pins` 列表 + `PinScreenshot()` + `PinFormClosed()` + **`CloseAllPins()`**（`ToArray()` 快照遍历，`Quit()` 与 `Dispose(bool)` 都调用）；**`OverlayKeyDown` 最前面加 `if (_overlay.IsEditingText) return;`**（打字抢键 BUG 的修复点）；`ReportHotkeyProblems()` + `_failedHotkeys`；`SettingsStore.Save` 返回值检查 → 气球提示"设置保存失败"；`CopyToClipboard` 的暂存位图改用 `using` |
-| `src\OverlayForm.cs` | `MaxStrokePoints = 20000` 上限 + `MinSampleDist = 1.5f` 抖动去重；`DenseEntry` / `_denseCache` / `DensifiedFor()` / `InvalidateDensifyCache()` 渲染期缓存；`ReleaseBrushPointer()` 修 GDI 泄漏；`ProcessCmdKey` 里 `_textEditor != null` 时放行 `Tab`（否则 `_tabHeld` 闩死，下一次拖动变椭圆）；`DrawMosaic` 的 `raw` 位图提升到 `finally` 释放；`StartScrollFollow` 检查 `SetExcludedFromCapture` 返回值 |
-| `src\SettingsForm.cs` | `FormBorderStyle` → **`Sizable`** + `MaximizeBox` / `MinimizeBox`；**新增 `ApplyMinimumSize()`**（`MinClientWidth = 560` / `MinClientHeight = 460` × DPI + 非客户区边框）；`ScaleSize()`；`OnResize` → `LayoutFooter()` + `RefreshScrollExtents()`（`_ready` 门控）；`DialogWidth` 1180 / `DialogHeight` 830 |
-| `src\SettingsStore.cs` | `Save()` 改为**原子写**：先写 `.tmp`，再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`），失败删 tmp 并返回 `false` |
-| `src\Config.cs` | `Clamp()` 里 **`ScreenshotFormat` 白名单**（去空白 / 去前导 `.` / 小写 / `jpeg → jpg` / 只允许 `png`-`jpg`-`bmp`，否则回退 `png`）；空白单键字段用 `new Settings()` 的出厂值补回 |
-| `src\Shell.cs` | `IconFromBytes` / `GenerateFallback` 里的 `Icon.FromHandle(...)` 改为 `Clone()` + `finally { DestroyIcon(h); }` |
-| `src\Program.cs` | `ReportCrash()` 在弹框前遍历 `Application.OpenForms` 逐个 `TopMost = false`，并用 `MessageBoxOptions.DefaultDesktopOnly` |
-| `build\run_probes.ps1` | 探针数 12 → **14**（加入 `pin_probe` / `typing_probe`）；`$srcs` 加入 `src\PinForm.cs` |
-| `build\pin_probe.cs` | **新增**，19,850 bytes。见 §1.5.4 末（57 条断言覆盖面） |
-| `build\typing_probe.cs` | **新增**，11,435 bytes。驱动 `Keys.L/P/O/E/A/B/D1/M/R/T/F/D0` + `Tab` + 真 `WM_CHAR` |
-| `build\verify_resize.py` | **新增**，6,596 bytes / 206 行，跨进程 9 项断言真实 EXE 的窗口样式与页脚布局 |
-| `build\measure_toolbar.cs` | **新增**，量框选工具条 4 个按钮的真实标签/宽度/是否收缩 |
-| `build\render_pin.cs` | **新增**，渲染贴图窗口 PNG 供人眼确认 |
-| `build\capture_new_features.py` | **新增**，跨进程截图本轮四个新界面（`build\shots\20_settings_min.png` / `21_settings_wide.png` 等） |
-| `README.md` | EXE 体积 230 KB → **241 KB**；新增 **贴图** 章节 + 托盘项 + 设置页"窗口大小可以自己调" + 4 条 FAQ；源码结构表 10 → **11** 行；探针数 9 → **14**；注明打字时单键命令会让位给输入框 |
-| `HANDOVER.md` | **本节 + §1.5（四条改动的根因/改法/证据 + 12 项审计表）+ §5.3/§5.4 编号调整 + §4 测试清单刷新 + 头部版本信息** |
-
-> 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
+| `build\obj\pristine.settings.json` | **新增**，出厂基线快照（⚠️ `build\obj\` 已在 `.gitignore` 内，该文件**现在已不存在**，见 §3.3） |
 
 ---
 
@@ -1061,7 +1129,7 @@ Accent   = RGB(232, 160, 0)
 ### 每一步完成后
 
 - 重新构建（**先删旧 exe** → `build.ps1`）；
-- 跑 `build\run_probes.ps1`（全套 **14** 个探针）；
+- 跑 `build\run_probes.ps1`（全套 **15** 个探针）；
 - 若动了 UI，再跑 `render_ui.cs` / `render_pin.cs` 并**逐页看图**；
 - 若动了设置窗口的窗口样式或页脚，再跑 `verify_resize.py`；
 - 确认 `dist\ScreenPen.settings.json` 仍是 49 键出厂值
