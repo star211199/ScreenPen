@@ -35,3 +35,9 @@ Desktop.ini
 # The live settings file is written next to the EXE at runtime, so a developer's
 # personal hotkeys and palette would otherwise show up as a diff on every run.
 dist/ScreenPen.settings.json
+
+# ---- assistant / local tooling state ---------------------------------------
+# Per-machine working notes kept by the coding assistant (.workbuddy-ai/memory).
+# Useful locally, meaningless to anyone cloning the repo, and never project
+# source. Kept on disk, just not published.
+.workbuddy-ai/

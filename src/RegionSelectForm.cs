@@ -24,10 +24,11 @@ namespace ScreenPen
     /// Full-screen region picker for screenshots.
     ///
     /// The screen is frozen once into a backdrop, dimmed, and the user drags a
-    /// rectangle over it. A small toolbar appears next to the selection offering
-    /// 保存 / 复制 / 贴图 / 取消, and the same actions are available on the
-    /// keyboard: Enter commits the default action, Ctrl+C copies, P pins to the
-    /// desktop and Esc cancels.
+    /// rectangle over it. A toolbar appears next to the selection offering
+    /// 保存 / 复制 / 贴图 / 识别文字 / 录制 GIF / 取消, and the same actions are
+    /// available on the keyboard: Enter commits the default action, Ctrl+C
+    /// copies, P pins to the desktop, O recognises text, G records a GIF and Esc
+    /// cancels.
     ///
     /// The selected pixels are cropped from the *frozen backdrop*, not from the
     /// live screen, so the selector's own dimming and toolbar can never end up
@@ -50,8 +51,9 @@ namespace ScreenPen
 
         /// <summary>
         /// What Enter and double-click mean. The caller decides, because the same
-        /// selector is used for "save", "copy" and "pin to desktop"; saving stays
-        /// the default so existing callers behave exactly as before.
+        /// selector is used for "save", "copy", "pin to desktop", OCR and GIF
+        /// recording; saving stays the default so existing callers behave exactly
+        /// as before.
         /// </summary>
         readonly RegionAction _defaultAction;
 
@@ -62,7 +64,23 @@ namespace ScreenPen
         Bitmap _cropped;
 
         // ---- toolbar geometry -------------------------------------------------
-        Rectangle _btnSave, _btnCopy, _btnPin, _btnCancel;
+        // The row is laid out generically over BtnCount actions. Adding an action
+        // means adding one label pair and nothing else: the natural width, the
+        // short-label fallback, the proportional shrink and the last-resort equal
+        // split all work off BtnCount rather than off a hard-coded 4.
+        //
+        // This replaced a fixed four-button row. The old design deliberately kept
+        // OCR and GIF keyboard-only ("a fifth button would not fit"), but the
+        // buttons are the discoverable path and the user could not find the
+        // features at all - so the row now grows and relies on the shrinking
+        // ladder that was already there for narrow desktops.
+        const int BtnCount = 6;
+
+        // Order is the paint order and the hit-test order. 取消 stays last so it
+        // never sits directly beside the button the cursor rests on.
+        const int BtnSave = 0, BtnCopy = 1, BtnPin = 2, BtnOcr = 3, BtnGif = 4, BtnCancel = 5;
+
+        Rectangle[] _btn = new Rectangle[BtnCount];
 
         // Authored at 100% scaling. A fixed 84 px button cannot hold
         // "复制 (Ctrl+C)" once the font renders at 200%, so every one of these is
@@ -79,13 +97,33 @@ namespace ScreenPen
         // The labels the toolbar is currently painting. Recorded by
         // LayoutToolbar so a test can measure the real strings and widths
         // instead of re-deriving (and possibly mis-deriving) the same decision.
-        string[] _btnLabels = new string[4];
+        string[] _btnLabels = new string[BtnCount];
         bool _btnShrunk;
 
         static readonly Color Accent = Color.FromArgb(255, 232, 160, 0);
         static readonly Color PanelBack = Color.FromArgb(238, 24, 26, 32);
         static readonly Color PanelBorder = Color.FromArgb(255, 90, 97, 112);
         static readonly Color TextMain = Color.FromArgb(255, 240, 242, 245);
+
+        // ---- selection editing ------------------------------------------------
+        // Once a region exists the user almost always wants to nudge it, not
+        // start over. Dragging inside the region moves it and the eight handles
+        // resize it; before this, the only way to fix a region that was a few
+        // pixels off was to draw it again from scratch.
+        enum SelDrag
+        {
+            None = 0,
+            New,        // drawing a fresh region
+            Move,
+            N, S, W, E, NW, NE, SW, SE
+        }
+
+        SelDrag _selDrag = SelDrag.None;
+        Rectangle _selDragOrigin;       // selection as it was when the gesture began
+        Point _selDragStart;            // pointer position when the gesture began
+
+        /// <summary>Handle side, authored at 96 DPI; scaled by <see cref="DpiScale"/>.</summary>
+        const int HandleSize = 9;
 
         // Cached soft shadow behind the action toolbar. Built once per panel
         // size; the toolbar only changes size when the window or DPI does.
@@ -222,6 +260,9 @@ namespace ScreenPen
                 if (_cfg.RegionShowSize)
                     DrawSizeBadge(g);
 
+                // 5. Resize handles, last so they sit above border and ticks.
+                DrawSelectionHandles(g);
+
                 LayoutToolbar();
                 DrawToolbar(g);
             }
@@ -241,7 +282,8 @@ namespace ScreenPen
 
         void DrawHint(Graphics g)
         {
-            string text = "拖动鼠标框选截图区域    ·    Enter 保存/复制/贴图    ·    Ctrl+C 复制    ·    P 贴图    ·    Esc 取消";
+            string text = "拖动鼠标框选截图区域    ·    Enter 执行高亮动作    ·    " +
+                          "框选后可拖动选区或拉伸控制点调整    ·    Esc 取消";
             using (Font f = new Font("Microsoft YaHei UI", 11f))
             {
                 SizeF sz = g.MeasureString(text, f);
@@ -323,122 +365,15 @@ namespace ScreenPen
             return w + BtnInnerPad * 2;
         }
 
-        void LayoutToolbar()
+        // ---- labels ------------------------------------------------------------
+
+        int PrimaryIndex()
         {
-            // Place the toolbar below-right of the selection, flipping when it
-            // would fall off-screen. The absolute positions are needed both for
-            // painting and hit-testing, so they are computed once here.
-            //
-            // The row is right-aligned to the selection and holds four buttons
-            // (保存 / 复制 / 贴图 / 取消). Each button is wide enough for its own
-            // label, so the same row works at 100% and at 200% scaling, and on a
-            // narrow desktop the whole row shrinks by dropping the keyboard hint
-            // before it is ever allowed to run off the edge.
-            int pad = Math.Max(4, (int)Math.Round(BtnPad * DpiScale()));
-            int btnH = Math.Max(18, (int)Math.Round(BtnH * DpiScale()));
-
-            string[] labels = new string[] {
-                SaveLabel(), CopyLabel(), PinLabel(), "取消 (Esc)"
-            };
-            string[] shorts = new string[] { "保存", "复制", "贴图", "取消" };
-
-            int maxRow = ClientSize.Width - 12 - pad * 2;
-            int[] widths = new int[4];
-            int widest = 0;
-            for (int i = 0; i < 4; i++)
-            {
-                widths[i] = Math.Max(BtnMinWidth, MeasureLabel(labels[i], i == 2));
-                if (widths[i] > widest) widest = widths[i];
-            }
-
-            int total = 0;
-            for (int i = 0; i < 4; i++) total += widths[i];
-
-            // Step 1: if the row does not fit, retry with the short labels.
-            bool shrunk = false;
-            if (total + pad * 4 > maxRow)
-            {
-                for (int i = 0; i < 4; i++)
-                    widths[i] = Math.Max(BtnMinWidth, MeasureLabel(shorts[i], i == 2));
-                labels = shorts;
-                shrunk = true;
-            }
-
-            // Step 2: scale every button down together so the row still fits.
-            total = 0;
-            for (int i = 0; i < 4; i++) total += widths[i];
-            int avail = maxRow - pad * 4;
-            if (total > avail && total > 0 && avail > 0)
-            {
-                int shrink = Math.Max(BtnMinWidth,
-                    (int)Math.Floor(widest * (double)avail / total));
-                for (int i = 0; i < 4; i++) widths[i] = Math.Min(widths[i], shrink);
-                shrunk = true;
-            }
-
-            // Step 3: even that can overflow on a tiny window; as a last resort
-            // make every button equal so the arithmetic still lands on screen.
-            total = 0;
-            for (int i = 0; i < 4; i++) total += widths[i];
-            if (total + pad * 4 > maxRow)
-            {
-                int each = Math.Max(1, (maxRow - pad * 4) / 4);
-                for (int i = 0; i < 4; i++) widths[i] = each;
-            }
-
-            total = 0;
-            for (int i = 0; i < 4; i++) total += widths[i];
-            int totalW = total + pad * 4;
-            int totalH = btnH + pad * 2;
-
-            int x = _selection.Right - totalW;
-            int y = _selection.Bottom + 10;
-            if (y + totalH > ClientSize.Height - 6) y = _selection.Top - totalH - 10;
-            if (y < 6) y = Math.Min(ClientSize.Height - totalH - 6, _selection.Bottom + 10);
-            if (y < 6) y = 6;                       // window shorter than the toolbar
-            if (x + totalW > ClientSize.Width - 6) x = ClientSize.Width - totalW - 6;
-            if (x < 6) x = 6;                       // even the shrunk row may not fit
-
-            _btnSave = new Rectangle(x + pad, y + pad, widths[0], btnH);
-            _btnCopy = new Rectangle(_btnSave.Right + pad, y + pad, widths[1], btnH);
-            _btnPin = new Rectangle(_btnCopy.Right + pad, y + pad, widths[2], btnH);
-            _btnCancel = new Rectangle(_btnPin.Right + pad, y + pad, widths[3], btnH);
-
-            _btnLabels = labels;
-            _btnShrunk = shrunk;
-        }
-
-        void DrawToolbar(Graphics g)
-        {
-            Rectangle bounds = Rectangle.Union(
-                Rectangle.Union(_btnSave, _btnCopy),
-                Rectangle.Union(_btnPin, _btnCancel));
-            bounds.Inflate(ToolbarPad(), ToolbarPad());
-
-            DrawToolbarShadow(g, bounds, 9);
-
-            using (GraphicsPath path = OverlayForm.RoundRect(
-                       new RectangleF(bounds.X, bounds.Y, bounds.Width, bounds.Height), 9))
-            {
-                using (SolidBrush b = new SolidBrush(PanelBack)) g.FillPath(b, path);
-                using (Pen p = new Pen(PanelBorder)) g.DrawPath(p, path);
-            }
-
-            // The accent marks whichever action Enter commits, so the highlighted
-            // button always describes what the keyboard shortcut will do.
-            // _btnLabels is exactly what LayoutToolbar sized each button for, so
-            // paint and measurement can never disagree.
-            string[] text = _btnLabels != null && _btnLabels.Length == 4
-                ? _btnLabels
-                : new string[] { SaveLabel(), CopyLabel(), PinLabel(), "取消 (Esc)" };
-
-            DrawToolbarButton(g, _btnSave, text[0],
-                              _defaultAction == RegionAction.SaveToFile);
-            DrawToolbarButton(g, _btnCopy, text[1],
-                              _defaultAction == RegionAction.CopyToClipboard);
-            DrawToolbarButton(g, _btnPin, text[2],
-                              _defaultAction == RegionAction.PinToDesktop);
-            DrawToolbarButton(g, _btnCancel, text[3], false);
+            if (_defaultAction == RegionAction.CopyToClipboard) return BtnCopy;
+            if (_defaultAction == RegionAction.PinToDesktop) return BtnPin;
+            if (_defaultAction == RegionAction.Ocr) return BtnOcr;
+            if (_defaultAction == RegionAction.RecordGif) return BtnGif;
+            return BtnSave;
         }
 
         string SaveLabel()
@@ -454,6 +389,154 @@ namespace ScreenPen
         string PinLabel()
         {
             return _defaultAction == RegionAction.PinToDesktop ? "贴图 (Enter)" : "贴图 (P)";
+        }
+
+        string OcrLabel()
+        {
+            return _defaultAction == RegionAction.Ocr ? "识别文字 (Enter)" : "识别文字 (O)";
+        }
+
+        string GifLabel()
+        {
+            return _defaultAction == RegionAction.RecordGif ? "录制GIF (Enter)" : "录制GIF (G)";
+        }
+
+        string[] LabelsForDefault()
+        {
+            return new string[] {
+                SaveLabel(), CopyLabel(), PinLabel(), OcrLabel(), GifLabel(), "取消 (Esc)"
+            };
+        }
+
+        static string[] ShortLabels()
+        {
+            return new string[] { "保存", "复制", "贴图", "识别", "GIF", "取消" };
+        }
+
+        /// <summary>The action a toolbar button commits.</summary>
+        static RegionAction ActionForButton(int index)
+        {
+            switch (index)
+            {
+                case BtnSave: return RegionAction.SaveToFile;
+                case BtnCopy: return RegionAction.CopyToClipboard;
+                case BtnPin: return RegionAction.PinToDesktop;
+                case BtnOcr: return RegionAction.Ocr;
+                case BtnGif: return RegionAction.RecordGif;
+                default: return RegionAction.Cancelled;
+            }
+        }
+
+        void LayoutToolbar()
+        {
+            // Place the toolbar below-right of the selection, flipping when it
+            // would fall off-screen. The absolute positions are needed both for
+            // painting and hit-testing, so they are computed once here.
+            //
+            // Every button is wide enough for its own label, so the same row
+            // works at 100% and at 200% scaling. On a narrow desktop the row
+            // degrades in four documented steps: full labels -> short labels ->
+            // every button scaled down together -> every button equal width.
+            int pad = Math.Max(4, (int)Math.Round(BtnPad * DpiScale()));
+            int btnH = Math.Max(18, (int)Math.Round(BtnH * DpiScale()));
+            int primary = PrimaryIndex();
+
+            string[] labels = LabelsForDefault();
+            string[] shorts = ShortLabels();
+
+            int maxRow = ClientSize.Width - 12 - pad * 2;
+            int[] widths = new int[BtnCount];
+            int widest = 0;
+            for (int i = 0; i < BtnCount; i++)
+            {
+                widths[i] = Math.Max(BtnMinWidth, MeasureLabel(labels[i], i == primary));
+                if (widths[i] > widest) widest = widths[i];
+            }
+
+            // Step 1: if the row does not fit, retry with the short labels.
+            bool shrunk = false;
+            if (SumWidths(widths) + pad * BtnCount > maxRow)
+            {
+                for (int i = 0; i < BtnCount; i++)
+                    widths[i] = Math.Max(BtnMinWidth, MeasureLabel(shorts[i], i == primary));
+                labels = shorts;
+                shrunk = true;
+            }
+
+            // Step 2: scale every button down together so the row still fits.
+            int total = SumWidths(widths);
+            int avail = maxRow - pad * BtnCount;
+            if (total > avail && total > 0 && avail > 0)
+            {
+                int shrink = Math.Max(BtnMinWidth,
+                    (int)Math.Floor(widest * (double)avail / total));
+                for (int i = 0; i < BtnCount; i++) widths[i] = Math.Min(widths[i], shrink);
+                shrunk = true;
+            }
+
+            // Step 3: even that can overflow on a tiny window; as a last resort
+            // make every button equal so the arithmetic still lands on screen.
+            if (SumWidths(widths) + pad * BtnCount > maxRow)
+            {
+                int each = Math.Max(1, (maxRow - pad * BtnCount) / BtnCount);
+                for (int i = 0; i < BtnCount; i++) widths[i] = each;
+            }
+
+            int totalW = SumWidths(widths) + pad * BtnCount;
+            int totalH = btnH + pad * 2;
+
+            int x = _selection.Right - totalW;
+            int y = _selection.Bottom + 10;
+            if (y + totalH > ClientSize.Height - 6) y = _selection.Top - totalH - 10;
+            if (y < 6) y = Math.Min(ClientSize.Height - totalH - 6, _selection.Bottom + 10);
+            if (y < 6) y = 6;                       // window shorter than the toolbar
+            if (x + totalW > ClientSize.Width - 6) x = ClientSize.Width - totalW - 6;
+            if (x < 6) x = 6;                       // even the shrunk row may not fit
+
+            int cx = x + pad;
+            for (int i = 0; i < BtnCount; i++)
+            {
+                _btn[i] = new Rectangle(cx, y + pad, widths[i], btnH);
+                cx += widths[i] + pad;
+            }
+
+            _btnLabels = labels;
+            _btnShrunk = shrunk;
+        }
+
+        static int SumWidths(int[] widths)
+        {
+            int t = 0;
+            for (int i = 0; i < widths.Length; i++) t += widths[i];
+            return t;
+        }
+
+        void DrawToolbar(Graphics g)
+        {
+            Rectangle bounds = _btn[0];
+            for (int i = 1; i < BtnCount; i++) bounds = Rectangle.Union(bounds, _btn[i]);
+            bounds.Inflate(ToolbarPad(), ToolbarPad());
+
+            DrawToolbarShadow(g, bounds, 9);
+
+            using (GraphicsPath path = OverlayForm.RoundRect(
+                       new RectangleF(bounds.X, bounds.Y, bounds.Width, bounds.Height), 9))
+            {
+                using (SolidBrush b = new SolidBrush(PanelBack)) g.FillPath(b, path);
+                using (Pen p = new Pen(PanelBorder)) g.DrawPath(p, path);
+            }
+
+            // The accent marks whichever action Enter commits, so the highlighted
+            // button always describes what the keyboard shortcut will do.
+            // _btnLabels is exactly what LayoutToolbar sized each button for, so
+            // paint and measurement can never disagree.
+            string[] text = _btnLabels != null && _btnLabels.Length == BtnCount
+                ? _btnLabels
+                : LabelsForDefault();
+
+            int primary = PrimaryIndex();
+            for (int i = 0; i < BtnCount; i++)
+                DrawToolbarButton(g, _btn[i], text[i], i == primary);
         }
 
         void DrawToolbarButton(Graphics g, Rectangle r, string text, bool primary)
@@ -512,6 +595,168 @@ namespace ScreenPen
         }
 
         // =====================================================================
+        //  Selection handles
+        // =====================================================================
+
+        int HandleSizePx()
+        {
+            return Math.Max(6, (int)Math.Round(HandleSize * DpiScale()));
+        }
+
+        /// <summary>
+        /// Handle rectangles in a fixed order: 0=NW 1=W 2=SW 3=N 4=NE 5=E 6=SE 7=S.
+        /// </summary>
+        Rectangle HandleRect(int index)
+        {
+            int s = HandleSizePx();
+            int half = s / 2;
+            Rectangle r = _selection;
+            int cx, cy;
+            switch (index)
+            {
+                case 0: cx = r.Left; cy = r.Top; break;
+                case 1: cx = r.Left; cy = r.Top + r.Height / 2; break;
+                case 2: cx = r.Left; cy = r.Bottom; break;
+                case 3: cx = r.Left + r.Width / 2; cy = r.Top; break;
+                case 4: cx = r.Right; cy = r.Top; break;
+                case 5: cx = r.Right; cy = r.Top + r.Height / 2; break;
+                case 6: cx = r.Right; cy = r.Bottom; break;
+                default: cx = r.Left + r.Width / 2; cy = r.Bottom; break;
+            }
+            return new Rectangle(cx - half, cy - half, s, s);
+        }
+
+        static SelDrag HandleToDrag(int index)
+        {
+            switch (index)
+            {
+                case 0: return SelDrag.NW;
+                case 1: return SelDrag.W;
+                case 2: return SelDrag.SW;
+                case 3: return SelDrag.N;
+                case 4: return SelDrag.NE;
+                case 5: return SelDrag.E;
+                case 6: return SelDrag.SE;
+                default: return SelDrag.S;
+            }
+        }
+
+        /// <summary>
+        /// Finds the handle under <paramref name="p"/>. Corners are tested before
+        /// edges so that on a small selection - where the handles overlap - the
+        /// corner still wins, which is what a user aiming at a corner expects.
+        /// </summary>
+        bool HitHandle(Point p, out SelDrag which)
+        {
+            which = SelDrag.None;
+            if (!_hasSelection) return false;
+            int[] order = new int[] { 0, 2, 4, 6, 1, 3, 5, 7 };
+            for (int i = 0; i < order.Length; i++)
+            {
+                if (HandleRect(order[i]).Contains(p))
+                {
+                    which = HandleToDrag(order[i]);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Whether the resize handles are shown. Below twice the handle size they
+        /// would cover the entire region and make it impossible to grab the body
+        /// to move it, so they are hidden and only Move stays available.
+        /// </summary>
+        bool HandlesVisible()
+        {
+            if (!_hasSelection) return false;
+            int s = HandleSizePx();
+            return _selection.Width >= s * 2 && _selection.Height >= s * 2;
+        }
+
+        void DrawSelectionHandles(Graphics g)
+        {
+            if (!HandlesVisible()) return;
+            int s = HandleSizePx();
+            for (int i = 0; i < 8; i++)
+            {
+                Rectangle r = HandleRect(i);
+                using (SolidBrush b = new SolidBrush(Accent)) g.FillRectangle(b, r);
+                using (Pen p = new Pen(Color.FromArgb(220, 20, 20, 24), 1f))
+                    g.DrawRectangle(p, r);
+            }
+        }
+
+        /// <summary>Keeps a moved region fully on screen without resizing it.</summary>
+        static Rectangle ClampToClient(Rectangle r, Size client)
+        {
+            if (r.Width > client.Width) r.Width = client.Width;
+            if (r.Height > client.Height) r.Height = client.Height;
+            if (r.X < 0) r.X = 0;
+            if (r.Y < 0) r.Y = 0;
+            if (r.Right > client.Width) r.X = client.Width - r.Width;
+            if (r.Bottom > client.Height) r.Y = client.Height - r.Height;
+            return r;
+        }
+
+        /// <summary>
+        /// Applies a resize gesture. Edges are clamped individually (rather than
+        /// clamping the finished rectangle) so the edge the user is *not* holding
+        /// stays put, and so dragging an edge past its opposite simply flips the
+        /// region instead of collapsing it.
+        /// </summary>
+        static Rectangle ResizeFrom(Rectangle origin, SelDrag kind, int dx, int dy, Size client)
+        {
+            int left = origin.Left, top = origin.Top, right = origin.Right, bottom = origin.Bottom;
+
+            if (kind == SelDrag.W || kind == SelDrag.NW || kind == SelDrag.SW) left = origin.Left + dx;
+            if (kind == SelDrag.E || kind == SelDrag.NE || kind == SelDrag.SE) right = origin.Right + dx;
+            if (kind == SelDrag.N || kind == SelDrag.NW || kind == SelDrag.NE) top = origin.Top + dy;
+            if (kind == SelDrag.S || kind == SelDrag.SW || kind == SelDrag.SE) bottom = origin.Bottom + dy;
+
+            left = Math.Max(0, Math.Min(client.Width, left));
+            right = Math.Max(0, Math.Min(client.Width, right));
+            top = Math.Max(0, Math.Min(client.Height, top));
+            bottom = Math.Max(0, Math.Min(client.Height, bottom));
+
+            return Rectangle.FromLTRB(Math.Min(left, right), Math.Min(top, bottom),
+                                      Math.Max(left, right), Math.Max(top, bottom));
+        }
+
+        static Cursor CursorForDrag(SelDrag kind)
+        {
+            switch (kind)
+            {
+                case SelDrag.NW:
+                case SelDrag.SE: return Cursors.SizeNWSE;
+                case SelDrag.NE:
+                case SelDrag.SW: return Cursors.SizeNESW;
+                case SelDrag.N:
+                case SelDrag.S: return Cursors.SizeNS;
+                case SelDrag.W:
+                case SelDrag.E: return Cursors.SizeWE;
+                case SelDrag.Move: return Cursors.SizeAll;
+                default: return Cursors.Cross;
+            }
+        }
+
+        void UpdateSelectionCursor(Point p)
+        {
+            if (_selDrag != SelDrag.None)
+            {
+                Cursor = CursorForDrag(_selDrag);
+                return;
+            }
+            if (_hasSelection)
+            {
+                SelDrag hit;
+                if (HitHandle(p, out hit)) { Cursor = CursorForDrag(hit); return; }
+                if (_selection.Contains(p)) { Cursor = Cursors.SizeAll; return; }
+            }
+            Cursor = Cursors.Cross;
+        }
+
+        // =====================================================================
         //  Mouse
         // =====================================================================
 
@@ -519,50 +764,112 @@ namespace ScreenPen
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-
-            // Clicking a toolbar button acts immediately.
-            if (_hasSelection)
-            {
-                if (_btnSave.Contains(e.Location)) { Finish(RegionAction.SaveToFile); return; }
-                if (_btnCopy.Contains(e.Location)) { Finish(RegionAction.CopyToClipboard); return; }
-                if (_btnPin.Contains(e.Location)) { Finish(RegionAction.PinToDesktop); return; }
-                if (_btnCancel.Contains(e.Location)) { Finish(RegionAction.Cancelled); return; }
-            }
-
-            _dragging = true;
-            _anchorClient = e.Location;
-            _cursorClient = e.Location;
-            _selection = new Rectangle(e.Location, Size.Empty);
-            _hasSelection = false;
-            Invalidate();
+            HandleLeftDown(e.Location);
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            _cursorClient = e.Location;
-
-            if (_dragging)
-            {
-                _selection = Normalise(_anchorClient, e.Location);
-                _hasSelection = _selection.Width >= 2 && _selection.Height >= 2;
-            }
-            Invalidate();
+            HandleMouseMove(e.Location);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
             if (e.Button != MouseButtons.Left) return;
+            HandleLeftUp(e.Location);
+        }
 
-            if (_dragging)
+        /// <summary>
+        /// Left-button press. Split out of <see cref="OnMouseDown"/> so the
+        /// automated probes can drive the real gesture path instead of a
+        /// parallel reimplementation of it.
+        /// </summary>
+        internal void HandleLeftDown(Point p)
+        {
+            if (_hasSelection)
             {
-                _dragging = false;
-                _selection = Normalise(_anchorClient, e.Location);
-                _hasSelection = _selection.Width >= 2 && _selection.Height >= 2;
-                if (_hasSelection) LayoutToolbar();
-                Invalidate();
+                // 1. A toolbar button acts immediately.
+                for (int i = 0; i < BtnCount; i++)
+                {
+                    if (_btn[i].Contains(p)) { Finish(ActionForButton(i)); return; }
+                }
+
+                // 2. A handle resizes, the body moves. Both take priority over
+                //    starting a new selection, so a region that is nearly right
+                //    can be corrected instead of drawn again.
+                SelDrag hit;
+                if (HitHandle(p, out hit)) { BeginGesture(hit, p); return; }
+                if (_selection.Contains(p)) { BeginGesture(SelDrag.Move, p); return; }
             }
+
+            // 3. Otherwise start a brand-new selection.
+            BeginGesture(SelDrag.New, p);
+            _selection = new Rectangle(p, Size.Empty);
+            _hasSelection = false;
+            Invalidate();
+        }
+
+        internal void HandleMouseMove(Point p)
+        {
+            _cursorClient = p;
+
+            if (_selDrag == SelDrag.None)
+            {
+                UpdateSelectionCursor(p);
+                Invalidate();
+                return;
+            }
+
+            ApplyGesture(p);
+            Invalidate();
+        }
+
+        internal void HandleLeftUp(Point p)
+        {
+            if (_selDrag == SelDrag.None) return;
+
+            ApplyGesture(p);
+            _selDrag = SelDrag.None;
+            _dragging = false;
+            if (_hasSelection) LayoutToolbar();
+            UpdateSelectionCursor(p);
+            Invalidate();
+        }
+
+        void BeginGesture(SelDrag kind, Point p)
+        {
+            _selDrag = kind;
+            _selDragStart = p;
+            _selDragOrigin = _selection;
+            _anchorClient = p;
+            _dragging = true;
+            Cursor = CursorForDrag(kind);
+        }
+
+        /// <summary>
+        /// Recomputes the selection for the gesture in progress. Shared by the
+        /// move and the release paths so both land on exactly the same geometry.
+        /// </summary>
+        void ApplyGesture(Point p)
+        {
+            if (_selDrag == SelDrag.New)
+            {
+                _selection = Normalise(_anchorClient, p);
+            }
+            else if (_selDrag == SelDrag.Move)
+            {
+                Rectangle r = _selDragOrigin;
+                r.Offset(p.X - _selDragStart.X, p.Y - _selDragStart.Y);
+                _selection = ClampToClient(r, ClientSize);
+            }
+            else
+            {
+                _selection = ResizeFrom(_selDragOrigin, _selDrag,
+                    p.X - _selDragStart.X, p.Y - _selDragStart.Y, ClientSize);
+            }
+
+            _hasSelection = _selection.Width >= 2 && _selection.Height >= 2;
         }
 
         protected override void OnMouseDoubleClick(MouseEventArgs e)
@@ -597,30 +904,47 @@ namespace ScreenPen
             // never shadow a future Ctrl+P.
             if (!e.Control && !e.Alt && e.KeyCode == Keys.P) { Finish(RegionAction.PinToDesktop); e.Handled = true; return; }
 
-            // Bare O recognises the text and bare G records a GIF. Both are
-            // keyboard-only on purpose: the toolbar is a fixed four buttons, and
-            // a fifth would push the row past the width it can shrink to on a
-            // small desktop. Also checked after the Ctrl branches, so a future
-            // Ctrl+O / Ctrl+G is still available.
+            // Bare O recognises the text and bare G records a GIF. Both now also
+            // have toolbar buttons; the keys stay as the fast path and are
+            // checked after the Ctrl branches, so Ctrl+O / Ctrl+G remain free.
             if (!e.Control && !e.Alt && e.KeyCode == Keys.O) { Finish(RegionAction.Ocr); e.Handled = true; return; }
             if (!e.Control && !e.Alt && e.KeyCode == Keys.G) { Finish(RegionAction.RecordGif); e.Handled = true; return; }
 
             // Arrow keys nudge the pending selection, which makes pixel-exact
-            // regions possible without a steady hand.
+            // regions possible without a steady hand. Shift+arrows resize instead
+            // of moving, so the same keys cover both adjustments.
             int step = (ModifierKeys & Keys.Shift) == Keys.Shift ? 10 : 1;
             if (_hasSelection)
             {
-                bool moved = true;
-                if (e.KeyCode == Keys.Left) _selection.Offset(-step, 0);
-                else if (e.KeyCode == Keys.Right) _selection.Offset(step, 0);
-                else if (e.KeyCode == Keys.Up) _selection.Offset(0, -step);
-                else if (e.KeyCode == Keys.Down) _selection.Offset(0, step);
-                else moved = false;
-
-                if (moved)
+                bool handled = true;
+                bool resize = (ModifierKeys & Keys.Shift) == Keys.Shift;
+                if (e.KeyCode == Keys.Left)
                 {
-                    // Keep the selection on screen.
-                    _selection.Intersect(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
+                    if (resize) _selection.Width = Math.Max(1, _selection.Width - step);
+                    else _selection.Offset(-step, 0);
+                }
+                else if (e.KeyCode == Keys.Right)
+                {
+                    if (resize) _selection.Width += step;
+                    else _selection.Offset(step, 0);
+                }
+                else if (e.KeyCode == Keys.Up)
+                {
+                    if (resize) _selection.Height = Math.Max(1, _selection.Height - step);
+                    else _selection.Offset(0, -step);
+                }
+                else if (e.KeyCode == Keys.Down)
+                {
+                    if (resize) _selection.Height += step;
+                    else _selection.Offset(0, step);
+                }
+                else handled = false;
+
+                if (handled)
+                {
+                    // Keep the selection on screen; for a resize this pulls the
+                    // anchor edge back rather than letting the region run off.
+                    _selection = ClampToClient(_selection, ClientSize);
                     LayoutToolbar();
                     Invalidate();
                     e.Handled = true;
@@ -732,6 +1056,7 @@ namespace ScreenPen
             _selection = Normalise(fromClient, toClient);
             _hasSelection = _selection.Width >= 2 && _selection.Height >= 2;
             _dragging = false;
+            _selDrag = SelDrag.None;
             if (_hasSelection) LayoutToolbar();
             Invalidate();
         }
@@ -742,15 +1067,81 @@ namespace ScreenPen
             Finish(action);
         }
 
+        /// <summary>
+        /// Clicks a toolbar button by index through the real mouse path, so a
+        /// probe exercises the same hit-test the user does rather than calling
+        /// Finish directly. Returns false when the index has no button.
+        /// </summary>
+        public bool ClickToolbarButtonForTest(int index)
+        {
+            if (index < 0 || index >= BtnCount) return false;
+            Rectangle r = _btn[index];
+            if (r.Width <= 0 || r.Height <= 0) return false;
+            Point c = new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+            HandleLeftDown(c);
+            HandleLeftUp(c);
+            return true;
+        }
+
+        // =====================================================================
+        //  Selection geometry (test seams)
+        // =====================================================================
+
+        /// <summary>
+        /// Presses the left button at a point and moves it, without releasing -
+        /// the state a resize or a move is in halfway through.
+        /// </summary>
+        public void SimulatePressAndDrag(Point fromClient, Point toClient)
+        {
+            HandleLeftDown(fromClient);
+            HandleMouseMove(toClient);
+        }
+
+        /// <summary>Releases the left button at a point.</summary>
+        public void SimulateRelease(Point atClient)
+        {
+            HandleLeftUp(atClient);
+        }
+
+        /// <summary>What the current gesture would do at this point (test use).</summary>
+        public string CursorNameAtForTest(Point p)
+        {
+            Cursor c = CursorAtForTest(p);
+            return c == null ? "(none)" : c.ToString();
+        }
+
         public Rectangle SelectionForTest { get { return _selection; } }
         public bool HasSelectionForTest { get { return _hasSelection; } }
-        /// <summary>Client rectangle of the save button, for hit-testing tests.</summary>
-        public Rectangle SaveButtonBounds { get { return _btnSave; } }
-        public Rectangle CopyButtonBounds { get { return _btnCopy; } }
+
+        /// <summary>How many actions the toolbar paints (test use).</summary>
+        public int ToolbarButtonCountForTest { get { return BtnCount; } }
+
+        /// <summary>Client rectangle of a toolbar button, for hit-testing tests.</summary>
+        public Rectangle ToolbarButtonBoundsForTest(int index)
+        {
+            if (index < 0 || index >= BtnCount) return Rectangle.Empty;
+            return _btn[index];
+        }
+
+        public Rectangle SaveButtonBounds { get { return _btn[BtnSave]; } }
+        public Rectangle CopyButtonBounds { get { return _btn[BtnCopy]; } }
         /// <summary>Client rectangle of the 贴图 button, for hit-testing tests.</summary>
-        public Rectangle PinButtonBounds { get { return _btnPin; } }
+        public Rectangle PinButtonBounds { get { return _btn[BtnPin]; } }
+        /// <summary>Client rectangle of the 识别文字 button.</summary>
+        public Rectangle OcrButtonBounds { get { return _btn[BtnOcr]; } }
+        /// <summary>Client rectangle of the 录制GIF button.</summary>
+        public Rectangle GifButtonBounds { get { return _btn[BtnGif]; } }
         /// <summary>Client rectangle of the cancel button, for hit-testing tests.</summary>
-        public Rectangle CancelButtonBounds { get { return _btnCancel; } }
+        public Rectangle CancelButtonBounds { get { return _btn[BtnCancel]; } }
+
+        /// <summary>Which button a click at this client point would activate.</summary>
+        public int ButtonIndexAtForTest(Point p)
+        {
+            for (int i = 0; i < BtnCount; i++)
+                if (_btn[i].Contains(p)) return i;
+            return -1;
+        }
+
         /// <summary>The action Enter and double-click commit, for tests.</summary>
         public RegionAction DefaultActionForTest { get { return _defaultAction; } }
 
@@ -760,11 +1151,13 @@ namespace ScreenPen
         public string SaveLabelForTest { get { return SaveLabel(); } }
         public string CopyLabelForTest { get { return CopyLabel(); } }
         public string PinLabelForTest { get { return PinLabel(); } }
+        public string OcrLabelForTest { get { return OcrLabel(); } }
+        public string GifLabelForTest { get { return GifLabel(); } }
         public string CancelLabelForTest { get { return "取消 (Esc)"; } }
 
         /// <summary>
         /// The labels LayoutToolbar actually sized the buttons for, in
-        /// save/copy/pin/cancel order. Null before the first layout.
+        /// save/copy/pin/ocr/gif/cancel order. Null before the first layout.
         /// </summary>
         public string[] ToolbarLabelsForTest
         {
@@ -780,6 +1173,7 @@ namespace ScreenPen
         /// require the labels to fit when this is false.
         /// </summary>
         public bool ToolbarShrunkForTest { get { return _btnShrunk; } }
+
         /// <summary>Toolbar padding in device pixels at the current DPI.</summary>
         int ToolbarPad()
         {
@@ -791,12 +1185,40 @@ namespace ScreenPen
         {
             get
             {
-                Rectangle r = Rectangle.Union(
-                    Rectangle.Union(_btnSave, _btnCopy),
-                    Rectangle.Union(_btnPin, _btnCancel));
+                Rectangle r = _btn[0];
+                for (int i = 1; i < BtnCount; i++) r = Rectangle.Union(r, _btn[i]);
                 r.Inflate(ToolbarPad(), ToolbarPad());
                 return r;
             }
+        }
+
+        /// <summary>Number of resize handles the selector exposes (test use).</summary>
+        public int HandleCountForTest { get { return 8; } }
+
+        /// <summary>Client rectangle of a resize handle (test use).</summary>
+        public Rectangle HandleBoundsForTest(int index)
+        {
+            if (index < 0 || index >= 8) return Rectangle.Empty;
+            return HandleRect(index);
+        }
+
+        /// <summary>Handle side in device pixels at the current DPI (test use).</summary>
+        /// <summary>Test seam: whether the resize handles are currently painted.</summary>
+        public bool HandlesVisibleForTest { get { return HandlesVisible(); } }
+
+        /// <summary>Test seam: the resize handles' size in device pixels.</summary>
+        public int HandleSizeForTest { get { return HandleSizePx(); } }
+
+        /// <summary>The cursor the selector would show at this point (test use).</summary>
+        public Cursor CursorAtForTest(Point p)
+        {
+            if (_hasSelection)
+            {
+                SelDrag hit;
+                if (HitHandle(p, out hit)) return CursorForDrag(hit);
+                if (_selection.Contains(p)) return Cursors.SizeAll;
+            }
+            return Cursors.Cross;
         }
 
         protected override void Dispose(bool disposing)

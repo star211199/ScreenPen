@@ -3,6 +3,11 @@
 # The probes compile the real app sources, so a probe that still passes after a
 # layout change is meaningful evidence; one that was never recompiled is not.
 # Always run this before claiming a change is verified.
+#
+# -Only <name>[,<name>] compiles and runs just those probes. Useful while
+# iterating on one of them, so a failure is not buried in a hundred lines of
+# output from the rest.
+param([string[]] $Only)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot\..
 
@@ -50,6 +55,7 @@ $srcs = @(
   'src\SettingsForm.cs', 'src\Shell.cs', 'src\PinForm.cs'
   'src\Beautifier.cs', 'src\ColorPickerForm.cs'
   'src\Gif.cs', 'src\Ocr.cs', 'src\GifRecorder.cs', 'src\OcrResultForm.cs'
+  'src\GifResultForm.cs', 'src\KeyboardHook.cs'
 )
 
 $probes = @(
@@ -58,7 +64,21 @@ $probes = @(
   'hotkey_record_probe', 'text_focus_probe', 'hostile_focus_probe', 'pin_probe'
   'typing_probe', 'measure_toolbar', 'tier1_probe', 'layout_cards'
   'gif_delta_probe', 'gif_ocr_probe', 'gif_recorder_probe', 'ocr_gif_wiring_probe'
+  'ux_fix_probe'
 )
+
+if ($Only) {
+  $wanted = @()
+  foreach ($name in $Only) {
+    $n = $name.Trim()
+    if ($n -notlike '*.cs') { $n = $n + '.cs' }
+    if ($probes -notcontains [System.IO.Path]::GetFileNameWithoutExtension($n)) {
+      throw "unknown probe '$name'. Known: $($probes -join ', ')"
+    }
+    $wanted += [System.IO.Path]::GetFileNameWithoutExtension($n)
+  }
+  $probes = $wanted
+}
 
 $failed = @()
 foreach ($p in $probes) {

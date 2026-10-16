@@ -37,6 +37,27 @@ namespace ScreenPen
         SettingsForm _settingsForm;
         GifRecorder _gifRecorder;
 
+        /// <summary>
+        /// Set once <see cref="Quit"/> starts. A finished recording would
+        /// otherwise open a modal result window from inside the shutdown path
+        /// and the process would never exit.
+        /// </summary>
+        bool _quitting;
+
+        /// <summary>
+        /// Watches for Esc while a recording is running.
+        ///
+        /// The recorder's own chrome window is WS_EX_NOACTIVATE and never takes
+        /// focus, so it can never receive a key press - which is why the README
+        /// promised "按 Esc 停止" and nothing happened. The only way to see the
+        /// key is a low-level keyboard hook, installed for the duration of the
+        /// recording only.
+        /// </summary>
+        KeyboardHook _recordingKeys;
+
+        /// <summary>Tray item that ends a recording early; enabled only while one runs.</summary>
+        ToolStripMenuItem _stopGifItem;
+
         readonly List<int> _registered = new List<int>();
 
         /// <summary>Hotkeys that failed to register, as "名称 = 组合键" strings.</summary>
@@ -126,6 +147,12 @@ namespace ScreenPen
             menu.Items.Add(MenuItem("区域截图并钉在桌面", (s, e) => RegionScreenshot(RegionAction.PinToDesktop)));
             menu.Items.Add(MenuItem("识别选区文字…", (s, e) => RegionScreenshot(RegionAction.Ocr)));
             menu.Items.Add(MenuItem("录制选区为 GIF…", (s, e) => RegionScreenshot(RegionAction.RecordGif)));
+            // Enabled only while a recording is actually running, so the tray
+            // itself tells the user a recording is in progress and gives them a
+            // way out that does not depend on remembering a key.
+            _stopGifItem = MenuItem("停止 GIF 录制", (s, e) => StopGifRecording());
+            _stopGifItem.Enabled = false;
+            menu.Items.Add(_stopGifItem);
             menu.Items.Add(MenuItem("整屏截图并保存…", (s, e) => ScreenshotToFile()));
             menu.Items.Add(MenuItem("复制整屏到剪贴板", (s, e) => CopyToClipboard()));
             menu.Items.Add(new ToolStripSeparator());
@@ -578,6 +605,13 @@ namespace ScreenPen
         /// </summary>
         void RegionScreenshot(RegionAction defaultAction)
         {
+            // Pressing the GIF key (or picking the tray item) again while a
+            // recording is running means "stop and save", not "start another
+            // one". Before this, the only way out of a recording was to wait for
+            // the 30 s cap - the README's "再次触发录制快捷键即可结束" simply did
+            // not exist.
+            if (defaultAction == RegionAction.RecordGif && StopGifRecording()) return;
+
             bool overlayWasVisible = _overlay.Visible;
             Bitmap frozen = null;
             try
@@ -800,14 +834,27 @@ namespace ScreenPen
             rec.Finished += delegate
             {
                 _gifRecorder = null;
+                StopRecordingKeyWatch();
+
                 string file = rec.LastFile;
+                int frames = rec.FrameCount;
+                int seconds = rec.ElapsedSeconds;
                 if (file != null)
                 {
-                    Balloon("GIF 已保存",
-                            string.Format("{0} 帧，{1} 秒\n{2}",
-                                    rec.FrameCount, rec.ElapsedSeconds, file),
-                            ToolTipIcon.Info);
                     PlayShotSound();
+
+                    // The path used to be reported through a balloon only. A
+                    // balloon vanishes after a couple of seconds and cannot be
+                    // selected or acted on, so the recording looked like it had
+                    // produced nothing at all - the reported complaint was
+                    // literally "不知道生成的动图在哪里". GifResultForm shows the
+                    // path in a selectable box next to 复制路径 / 在文件夹中显示 /
+                    // 打开动图.
+                    //
+                    // Skipped while quitting: a modal dialog inside Quit() would
+                    // block shutdown forever.
+                    if (!_quitting)
+                        GifResultForm.ShowResult(file, frames, seconds);
                 }
                 else
                 {
@@ -821,10 +868,15 @@ namespace ScreenPen
             try
             {
                 rec.Start(region, null);
+                // Start() can fail synchronously (region too small) and raise
+                // Finished on the spot, so only arm the Esc watch once a
+                // recording actually exists.
+                if (IsRecordingGif) StartRecordingKeyWatch();
             }
             catch (Exception ex)
             {
                 _gifRecorder = null;
+                StopRecordingKeyWatch();
                 rec.Dispose();
                 Balloon("无法开始录制", ex.Message, ToolTipIcon.Warning);
             }
@@ -836,8 +888,52 @@ namespace ScreenPen
             GifRecorder rec = _gifRecorder;
             if (rec == null) return;
             _gifRecorder = null;
+            StopRecordingKeyWatch();
             try { rec.Stop(null); } catch { }
             try { rec.Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// True when a GIF is being recorded right now, so the caller can turn a
+        /// second trigger into "stop" instead of starting a new selection.
+        /// </summary>
+        internal bool IsRecordingGif
+        {
+            get
+            {
+                GifRecorder rec = _gifRecorder;
+                return rec != null && (rec.IsRecording || rec.IsCountingDown);
+            }
+        }
+
+        /// <summary>
+        /// Ends a recording from the outside (Esc, the tray item, or a second
+        /// press of the GIF hotkey). Returns false when nothing was recording.
+        /// </summary>
+        internal bool StopGifRecording()
+        {
+            if (!IsRecordingGif) return false;
+            StopRecordingIfAny();
+            return true;
+        }
+
+        void StartRecordingKeyWatch()
+        {
+            StopRecordingKeyWatch();
+            KeyboardHook hook = new KeyboardHook();
+            hook.EscapePressed += delegate { StopGifRecording(); };
+            if (hook.Install()) _recordingKeys = hook;
+            else hook.Dispose();
+            if (_stopGifItem != null) _stopGifItem.Enabled = true;
+        }
+
+        void StopRecordingKeyWatch()
+        {
+            if (_stopGifItem != null) _stopGifItem.Enabled = false;
+            KeyboardHook hook = _recordingKeys;
+            if (hook == null) return;
+            _recordingKeys = null;
+            try { hook.Dispose(); } catch { }
         }
 
         /// <summary>
@@ -1362,6 +1458,10 @@ namespace ScreenPen
         {
             try
             {
+                // Set before the recording is stopped: the recorder raises
+                // Finished from inside Stop(), and the result window must not be
+                // shown from the shutdown path or the process would never exit.
+                _quitting = true;
                 UnregisterAll();
                 HideOverlay();
                 // A recording in progress owns a border window and a timer; write

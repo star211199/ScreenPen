@@ -3,16 +3,24 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（**构建与写盘健壮性加固**，见 §1.8；
-> 上一轮为文字识别 OCR + 录制 GIF 动图，见 §1.7；
-> 再上一轮为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
+> 最后更新：本轮（**四个交互缺陷修复**：工具条加 OCR/GIF 入口、选区可移动缩放、
+> GIF 结果窗口、滚轮穿透与 Esc 停止录制，见 §1.9；
+> 上一轮为构建与写盘健壮性加固，见 §1.8；
+> 再上一轮为文字识别 OCR + 录制 GIF 动图，见 §1.7；
+> 更早为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
 > + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复，见 §1.6 与 §5.2）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，302,080 bytes（295.0 KB）
-> `sha256 2AC349A1552ABF39F35F924D1AC2B41B6D8965A965321302E9F9654A6B37E2DE`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（21/21）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，314,880 bytes（307.5 KB）
+> `sha256 856EE6F11A612E288BAD61F801D438A0D6D1E3EFA98CCD246712DD682C7E6763`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（22/22）
+> 单跑一个探针：`build\run_probes.ps1 -Only ux_fix_probe`
+> 视觉诊断：`build\run_render.ps1 render_pin` → `build\shots\render\*.png`（给人眼看，不做断言）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
 > `verify_readme.py` **7/7**（核对 **78 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
 > `verify_resize.py` **9/9**
+>
+> ⚠️ `verify_ui.py` 读的是 `capture_ui.py` **先前截好的 PNG**，不会自己截图。
+> 只改代码不重跑 `capture_ui.py`，`verify_ui.py` 会拿旧图给你一个**毫无意义的 81/81**。
+> 顺序必须是 `capture_ui.py` → `verify_ui.py`。
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
 > 用**文件体积**和**修改时间**对比 `src\` 最新文件即可。
@@ -34,13 +42,16 @@ cd ScreenPen
 - **C# 5 语法上限**（旧 csc）：禁止字符串插值 `$"..."`、表达式体成员 `=>`、`nameof`、`?.`、
   局部函数、自动属性初始化器。用 `delegate`、`string.Format`、传统属性。`var`/lambda/匿名类型/对象初始化器可用。
 - 重新编译前**必须先删除**目标 exe（文件被占用会报 CS0016）。
-- 源码**恰好 17 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
+- 源码**恰好 19 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
   `SettingsStore.cs`、`RegionSelectForm.cs`、`PinForm.cs`、`AppContext2.cs`、`BrushCursor.cs`、
   `SettingsForm.cs`、`OverlayForm.cs`、`Beautifier.cs`、`ColorPickerForm.cs`、
-  `Gif.cs`、`GifRecorder.cs`、`Ocr.cs`、`OcrResultForm.cs`。**没有 `HotkeyBox.cs`**
+  `Gif.cs`、`GifRecorder.cs`、`GifResultForm.cs`、`KeyboardHook.cs`、
+  `Ocr.cs`、`OcrResultForm.cs`。**没有 `HotkeyBox.cs`**
   （`HotkeyBox` 是 `SettingsForm.cs` 内的私有嵌套类）。
   > ⚠️ `build\run_probes.ps1` 与 `build\build.ps1` 的源码列表里**已经有 `src\PinForm.cs`**；
   > 手工编译时漏掉它会在 `AppContext2.cs` 上得到 CS0246（找不到 `PinForm`）。
+  > 手工编译还要带上 `src\GifResultForm.cs` 与 `src\KeyboardHook.cs`，
+  > 否则 `AppContext2.cs` 会报找不到 `GifResultForm` / `KeyboardHook`。
   > ⚠️ `Gif.cs` / `GifRecorder.cs` 用了 WPF 的 `System.Windows.Media.Imaging`，
   > 手工编译**必须**加三个引用，且 `WindowsBase.dll` 在 `WPF\` 子目录、`System.Xaml.dll`
   > 在 Framework64 根目录（写反会得到 CS0006）：
@@ -49,11 +60,12 @@ cd ScreenPen
 
 ### 测试
 
-**首选：一条命令跑完全部 21 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 22 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
 .\build\run_probes.ps1        # 全过 → "ALL PROBES PASSED" + exit 0
+.\build\run_probes.ps1 -Only ux_fix_probe    # 只跑一个，省得在几百行里翻
 ```
 
 单个探针也可以手工编译运行，模式固定为（`Program.cs` 不要一起编，它有 `Main`）：
@@ -784,7 +796,13 @@ ShareX 花了 **4.5 年**才加上撤销重做（issue #4079），本项一次�
 
 #### 1.7.1 为什么工具栏没有变成 5 个按钮
 
-区域选择界面的工具条**必须保持恰好 4 个按钮**——`pin_probe.cs`、`measure_toolbar.cs`
+> **⚠️ 本节结论已在 §1.8 被用户明确推翻**，保留在此仅作历史记录。
+> 用户的原话是「OCR 和 gif 都可以在截图那个增加要给按钮」——工具条入口本来就是
+> 他想要的东西。工具条现在按**数量**而不是四个具名矩形来布局，`BtnCount = 6`，
+> 所以再加按钮不再需要动布局代码。下面的"三处探针在断言恰好 4 个"已经全部
+> 改写成"遍历全部按钮"。
+
+区域选择界面的工具条**曾经必须保持恰好 4 个按钮**——`pin_probe.cs`、`measure_toolbar.cs`
 （`labels.Length == 4`）、`region_probe.cs` 三处都在断言这件事，因为那个宽度是在
 小桌面上还能收得下的上限。
 
@@ -963,6 +981,258 @@ tmp = null;
 > `dist\ScreenPen.exe` 的体积和 sha256 每次编译都不同（新的 MVID），
 > 这是 §0 里已经说明过的，不要拿哈希判断是否重新编译过。
 > 本轮体积 **301,568 → 302,080 B**（+512 B），来自 `Gif.Encode` 的临时文件逻辑。
+
+---
+
+### 1.9 第八轮：四个交互缺陷修复（已完成）
+
+用户一次性报了五个问题，原文：
+
+> 文字识别OCR功能交互方式不友好，跟随滚动功能有bug(我想做的是在标注的时候可以使用鼠标滚轮上下滑动页面，
+> 这个是否可以实现，标注跟不跟着移动都无所谓)，还有gif动图功能有bug,交互方式也不友好，
+> 生成的动图保存路径也不显示，复制按钮也不显示，不知道生成的动图在哪里，
+> OCR和gif都可以在截图那个增加要给按钮，还有截图的时候，框选了区域之后，就不可以移动候选框了，
+> 我想有的是还可以自动调节框选的区域的，帮我优化一下这些存在的问题
+
+本轮**新增 2 个源文件、1 个探针**，改写了 `RegionSelectForm` 的工具条与选区几何，
+并推翻了 §1.7.1 里"工具条必须恰好 4 个按钮"的设计约束。
+
+#### 1.9.1 工具条 4 → 6 个按钮，且以后再加不用动布局
+
+**问题**：OCR / GIF 只能靠快捷键触发（§1.7.1 的设计），工具条上没有任何入口，
+所以用户根本不知道有这两个功能。
+
+**改法**：`RegionSelectForm` 里原来是一串具名成员（`_btnSave` / `_btnCopy` /
+`_btnPin` / `_btnCancel`）加一堆散落的下标。现在换成**数量驱动**：
+
+```csharp
+const int BtnCount = 6;
+const int BtnSave = 0, BtnCopy = 1, BtnPin = 2, BtnOcr = 3, BtnGif = 4, BtnCancel = 5;
+Rectangle[] _btn = new Rectangle[BtnCount];
+string[] _btnLabels = new string[BtnCount];
+```
+
+`LayoutToolbar()` 只遍历 `BtnCount`，**原来的四级降级顺序一步没少**：
+自然标签 → 短标签（`保存/复制/贴图/识别/GIF/取消`）→ 按最宽按钮等比收窄 → 极端小窗等宽兜底。
+`ActionForButton(int)` 是下标到 `RegionAction` 的唯一映射，`PrimaryIndex()` 决定哪个按钮高亮
+（现在 `Ocr` / `RecordGif` 也会高亮自己那一个）。
+
+> 关键点：**新的按钮走的是和快捷键完全相同的 `Finish(ActionForButton(i))`**，
+> 不存在"按钮能用但快捷键不能用"或者反过来的分叉。
+
+#### 1.9.2 框选完成后可以移动和缩放（`RegionSelectForm`）
+
+**问题**：`OnMouseDown` 里"有选区"这一分支只有两件事——命中工具条就 `Finish`，
+否则**一律 `BeginGesture(SelDrag.New)` 重新开一个框**。所以框完就定型了，
+手抖多框了两像素也只能重画。
+
+**改法**：加了 `enum SelDrag { None, New, Move, N, S, W, E, NW, NE, SW, SE }`，
+以及 `HandleRect(int)` 定义的 **8 个把手**（顺序 `0=NW 1=W 2=SW 3=N 4=NE 5=E 6=SE 7=S`，
+把手矩形**以边框线为中心**，所以有一半在选区外——这是有意的，方便从外侧抓）。
+`HandleLeftDown` 的优先级变成：
+
+1. 工具条按钮 → `Finish`
+2. **把手** → 缩放（`HitHandle`，**角优先于边**，因为小选区上把手会重叠，瞄角就该拿到角）
+3. **选区内部** → 整体移动
+4. 其余 → 新框选
+
+`ResizeFrom(origin, kind, dx, dy, client)` **逐条边单独钳制**而不是钳制最终矩形，
+这样"用户没抓的那条边"不会跟着动。移动走 `ClampToClient`，保证不把选区拖出屏幕。
+光标由 `CursorForDrag` / `UpdateSelectionCursor` 给（`SizeNWSE` / `SizeNESW` / `SizeNS` /
+`SizeWE` / `SizeAll`）。
+
+把手在**小于 2 倍把手边长**的选区上会隐藏（`HandlesVisible()`）——否则把手会盖满整个选区，
+连"拖动内部移动"都没地方下手了。
+
+鼠标逻辑被拆成 `HandleLeftDown` / `HandleMouseMove` / `HandleLeftUp`，
+`OnMouseDown/Move/Up` 只是转发，**探针因此能驱动真实手势路径**而不是另写一套。
+
+#### 1.9.3 GIF 录完之后，必须看得见文件在哪（`src\GifResultForm.cs`，新增）
+
+**问题**：录制结束时只 `Balloon("GIF 已保存", ...)`。气泡 2 秒就消失、不能选中、
+不能点，所以用户的原话是"不知道生成的动图在哪里"。
+
+**改法**：新增结果窗口，显示
+
+- `已保存：<文件名>`
+- `42 帧   7 秒   2.0 MB`
+- `保存位置（可直接选中复制）：` + 一个**只读 `TextBox`**（可选中、可 `Ctrl+C`、路径深了能滚动）
+- 四个按钮：**复制路径** / **在文件夹中显示** / **打开动图** / **关闭**
+
+`在文件夹中显示` 用 `explorer.exe /select,"<path>"`，会**在资源管理器里高亮这个文件本身**，
+而不只是打开所在目录。
+
+**布局刻意不用 `Dock`**：WinForms 里 docked 子控件是按**反 z-order** 解析的，
+"谁最后压在上面"取决于 `Controls.Add` 的调用顺序。全部改用显式 `SetBounds`
+（`LayoutChildren()` 在构造和 `OnResize` 里调），在任何 DPI 和任何宽度下表现一致。
+
+> **实测抓到的自伤**：`ClientSize = ...` 写在构造函数里，会**先触发 `OnResize` → `LayoutChildren()`**，
+> 而此时子控件字段还全是 `null` → `NullReferenceException`，构造函数直接崩。
+> `ux_fix_probe` 一跑就复现了。`LayoutChildren()` 现在开头有一句
+> `if (_head == null || _close == null) return;`。
+> **在一个"专门用来告诉用户文件在哪"的窗口上崩掉，比原来那个气泡还糟。**
+
+**`AppContext2.RecordGif` 的接线**：`rec.Finished` 里改成
+`GifResultForm.ShowResult(file, frames, seconds)`。注意两点：
+
+- `frames` / `seconds` 必须在 `rec.Dispose()` **之前**读出来；
+- `Quit()` 里新增 `_quitting` 标志。`StopRecordingIfAny()` 会同步触发 `Finished`，
+  如果在关机路径里弹一个模态窗口，进程就**永远退不出去**。
+
+#### 1.9.4 GIF 的"怎么停下来"以前根本不存在（`src\KeyboardHook.cs`，新增）
+
+README 一直写着"按 `Esc` 或再次触发录制快捷键即可结束并保存"，但：
+
+- 录制红框 `RecorderChrome` 是 `WS_EX_NOACTIVATE` 且**从不获取焦点**，收不到任何按键；
+- `AppContext2` 里**没有任何全局键盘钩子**，`Esc` 会直接落到前台程序；
+- `RegionScreenshot(RecordGif)` 也没有"已在录制就停止"的分支。
+
+结论：**唯一能结束录制的方式是等满 30 秒上限**。这是本轮发现的最严重的一个 bug，
+而且它是**文档承诺了、代码里不存在**。
+
+**改法**（三条路都补上）：
+
+1. `src\KeyboardHook.cs`：录制期间临时挂 `WH_KEYBOARD_LL`，只认 `Esc`，
+   录完立刻卸载（`StartRecordingKeyWatch` / `StopRecordingKeyWatch`）。
+   两个实现细节是必须的：
+   - **回调里不做实事**，用 `SynchronizationContext.Post` 把工作丢回消息队列。
+     Windows 对超过 `LowLevelHooksTimeout`（约 300ms）的低层钩子会**静默摘掉**，
+     而"停止录制"要把整个 GIF 编码写盘——在回调里做，第一次 `Esc` 之后钩子就没了。
+   - **吞掉这个 `Esc`**（返回 1 而不是 `CallNextHookEx`），录制期间 `Esc` 属于录制，
+     不该漏给前台程序。
+2. `RegionScreenshot` 开头：`if (defaultAction == RecordGif && StopGifRecording()) return;`
+   —— 第二次触发 = 停止，而不是"再开一个框选"。
+3. 托盘新增 **停止 GIF 录制**，**只在录制期间可用**（`_stopGifItem.Enabled`），
+   这样托盘本身就能告诉用户"现在正在录"。
+
+> `KeyboardHook` 的委托**必须存在字段里**：GC 不追踪只被 native 代码引用的委托，
+> 存在局部变量里会被回收，下一次按键就跳进已释放的内存。
+
+#### 1.9.5 滚轮为什么滚不动下面的页面（`OverlayForm` + `Native`）
+
+这是"跟随滚动有 bug"的真正根因，和相关性算法一点关系都没有。
+
+**问题链**：
+
+1. 标注层是一张**全屏置顶**的窗口；
+2. `SendWheel` 用 `SendInput` 注入滚轮，而 `SendInput` 投递到**光标下的窗口**——
+   也就是**标注层自己**；
+3. 于是自己的 `OnMouseWheel` 又被调一次，`passToDocument` 仍为 true，
+   **再注入一次**……下面的网页**一次都没滚**；
+4. 更早一层：`Native.IsScrollableWindowUnder` 用 `WindowFromPoint`，
+   在标注层不穿透时**返回的永远是标注层自己**，类名不在黑名单里 → 判定"可滚动"。
+   所以旧代码是"确认了一个根本没确认过的页面可滚动，然后把滚轮扔给自己"。
+
+**改法**（`OverlayForm.ForwardWheel`）：
+
+```csharp
+if (Environment.TickCount - _wheelForwardTick < WheelPassThroughMs) return true; // 吃掉自己的回声
+BeginWheelPassThrough();                       // WS_EX_TRANSPARENT，命中测试跳过我们
+bool scrollable = Native.IsScrollableWindowUnder(screen);   // 现在才真的看到文档
+if (!scrollable) { EndWheelPassThrough(); return false; }
+_wheelForwardTick = Environment.TickCount;
+Native.SendWheel(delta, false);
+_wheelRestoreTimer.Stop(); _wheelRestoreTimer.Start();      // 180ms 后撤销
+```
+
+- 穿透窗口期内**标注层收不到鼠标**，所以注入的滚轮回声根本进不来——这才是打破死循环的关键，
+  tick 判断只是双保险；
+- 连续滚动会**不断续期**这个 180ms，所以整段滚动期间保持穿透，不会在两个刻度之间闪断；
+- `Native.IsScrollableWindowUnder` 增加 **PID 判定**：窗口（或其 root）属于本进程就返回 false。
+  标注层万一没穿透成功，也不会再谎报"可滚动"。
+
+**顺带修掉 `Native.SetClickThrough` 的两个问题**：
+
+- 原来 `enable` 时 `|= WS_EX_LAYERED`，`disable` 时**不清**——每调用一次就把窗口
+  永久变成 layered，一个不可见的渲染改动会活过整个功能寿命。现在完全不碰 `LAYERED`，
+  命中测试穿透本来就只需要 `WS_EX_TRANSPARENT`；
+- 加了 `SetWindowPos(..., SWP_FRAMECHANGED)`，否则 ex-style 可能"读得到、命中测试不生效"；
+- 加了 `next == v` 短路，状态没变就不写。
+
+#### 1.9.6 `ScrollFollowClickThrough` 从死开关变成真开关（含一次键名迁移）
+
+这个设置**写盘、有 UI 复选框、有 README 说明，但 `src/` 里没有任何一处读它**——
+勾了等于没勾。
+
+现在它按字面实现了：**跟随模式期间**标注层保持穿透（可以滚动、点链接）。
+但代价必须说清楚——穿透是**整个窗口**的属性，所以那时**画不了新标注**。
+默认值因此从 `true` 改成 `false`（默认应该是"还能继续标注"的那个）。
+
+**键名迁移**：老配置里已经存着一个 `"ScrollFollowClickThrough": true`
+（用户机器上实测确实有），而它从来没有产生过任何可观察的效果。
+直接沿用这个键名，等于把一个"用户从没见过的 true"变成"一按 F 就画不了字"。
+所以读写都换到 **`ScrollFollowClickThroughV2`**：老键被忽略，老用户拿到安全的默认值
+`false`，下次保存时老键自然消失。
+
+#### 1.9.7 本轮的验证结果
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\run_probes.ps1` | **22/22 PASS** |
+| `ux_fix_probe`（新增） | 全部通过，覆盖上述五个问题 + 键名迁移 |
+| `ocr_gif_wiring_probe` | 47 → **64/64**（工具条 6 按钮、点击落点、按数量遍历） |
+| `pin_probe` | 改成遍历 `ToolbarButtonCountForTest`，不再只查四个具名矩形 |
+| `measure_toolbar` | 5 种桌面宽度 × **5 种默认动作**（新增 `Ocr` / `RecordGif`）× 6 个按钮的真实字宽 |
+| `verify_upgrade.py` | **26/26** |
+| `verify_hotkeys.py` | **20/20** |
+| `verify_ui.py` | **81/81**（**先重跑 `capture_ui.py`**；修掉 §1.9.8 的两个坑之后才是真的） |
+| `verify_readme.py` | **7/7**（78 键；并验证跑完会还原用户配置） |
+| `e2e_test.py` | **27/27** |
+| `check_tray.py` | **6/6** |
+| `verify_resize.py` | **9/9** |
+| 构建 | `sources: 19`，`dist\ScreenPen.exe` **314,880 B**，`sha256 856EE6F1…` |
+
+`ux_fix_probe` 里两条值得单独说的断言：
+
+- **`Esc` 钩子是用真按键验的**：`Native.SendEscape()` 走 `keybd_event` 注入真实按键，
+  再泵消息，断言 `EscapePressed` 真的被触发（`callbacks=1`）。
+  只调测试缝的话，验的是自己的转发代码，不是钩子本身。
+- **穿透是真读窗口样式验的**：`Native.ExStyleOf(ov.Handle)` 在穿透前后各读一次，
+  断言 `WS_EX_TRANSPARENT` 被置上、又被清掉，且**前后 ex-style 逐位相同**
+  （`0x10008 -> 0x10008`）——这条同时是"不再残留 `WS_EX_LAYERED`"的回归守卫。
+
+> 顺带修的一个探针自身的 bug：`ux_fix_probe` 一开始断言"把手中心落在选区边上"，
+> 用的却是 `Right - 1`。把手是**以边框线为中心**的，中心正好是 `Right`。
+> 是**探针错了，不是代码错了**——这类断言要先想清楚"正确的定义是什么"再写。
+> 另外 `run_probes.ps1` 现在支持 `-Only <探针名>`，单跑一个探针时不用再在几百行输出里找。
+
+#### 1.9.8 三个"测试在骗自己"的坑（本轮踩到并修掉）
+
+跑跨进程验收时发现 `verify_ui.py` 报 81/81，但那个 81/81 **是假的**。顺着查出来三个
+**验证工具自己**的问题，都不是产品缺陷，但每一个都会让人得出错误结论：
+
+1. **`verify_ui.py` 不会截图，它读 `capture_ui.py` 先前的产物。**
+   我改了设置页文案之后直接跑 `verify_ui.py`，它拿的是 **10 月 15 日的旧 PNG**，
+   于是给我一个漂亮的 81/81。**只改代码不重跑 `capture_ui.py`，这个脚本毫无意义。**
+   （修法：在 HANDOVER 头部和 README 里把"必须按 `capture_ui.py` → `verify_ui.py` 的顺序"
+   写成硬性说明。）
+
+2. **`capture_ui.py` 截的是整窗，而 `verify_ui.py` 的常量是客户端坐标。**
+   `PrintWindow` 会把**非客户区**（标题栏）也渲染进去，本机 200% DPI 下那就是顶部
+   **58px 的浅色标题栏**。而 `NAV_W = 190` / `HEADER_H = 64` / `FOOTER_H = 60` 全是按
+   客户端算的——于是 `header = a[:64, 190:]` 量的其实是**操作系统的标题栏**，
+   难怪"header band is a card"掉到 8%。
+   **为什么以前能过**：标题栏的深色标题文字正好落在 `TEXTMAIN` 上，给每一页
+   白送了约 3000 个"主文字"像素，把 `bright > 8000` 这条阈值撑过去了；
+   裁掉标题栏之后，最稀疏的 `关于` 页只有 5166 px 就暴露了。
+   修法：`capture_ui.py` 新增 `client_crop()`，用 `GetClientRect` + `ClientToScreen`
+   算出客户区偏移并裁掉非客户区；`verify_ui.py` 的主文字阈值按真实页面重新标定
+   （8000 → 4000，注释里写清"这条是在防白页，不是在量页面有多满"）。
+
+3. **`verify_readme.py` 会把用户的真实配置覆盖掉。**
+   它必须把 README 里的 JSON 当配置喂给程序，但 `dist\ScreenPen.settings.json`
+   就是用户的**在用的**配置——跑一次就等于把人家设置重置成文档样例。
+   修法：跑之前字节备份，最后在报告之前恢复（放在最后，这样即使中途断言失败
+   也不会把用户配置留在被替换的状态）。
+
+> 这三条的共同点：**验证工具本身没有被验证过**。
+> 判据不是"它报了 PASS"，而是"它这一轮真的读到了我刚改的代码/刚生成的产物"。
+> 以后看到某个验收脚本全绿，先问一句：**它的输入是这一轮生成的吗？**
+
+`verify_readme.py` 另外还要知道一处**有意的键名不一致**：`Config.cs` 的字段叫
+`ScrollFollowClickThrough`，落盘键叫 `ScrollFollowClickThroughV2`（§1.9.6）。
+脚本里加了 `JSON_KEY_OVERRIDES` 显式声明这件事，否则它会把这个**故意的**别名
+报成"文档写了程序不存在的键"。
 
 ---
 
@@ -1292,9 +1562,28 @@ EXE 没反应"。根因用 `build\broadcast_probe.cs` 证实：
   `Ctrl+A` / 方向键 / 裸 `P`。裸 `P` 的 `if` **必须写在 `Ctrl` 分支之后**——
   写在前面就会永久遮蔽将来可能加的 `Ctrl+P`。
 - **`RegionAction` 的数值是契约**：`Cancelled = 0` / `SaveToFile = 1` /
-  `CopyToClipboard = 2` / `PinToDesktop = 3`。`0` 同时被当作"未指定"的哨兵
-  （构造时 `defaultAction == Cancelled` 会归一化成 `SaveToFile`；`Finish()` 里选区为空也会
-  退化成 `Cancelled`）。**新动作只能追加，不要插队或重排。**
+  `CopyToClipboard = 2` / `PinToDesktop = 3` / `Ocr = 4` / `RecordGif = 5`。`0` 同时被当作
+  "未指定"的哨兵（构造时 `defaultAction == Cancelled` 会归一化成 `SaveToFile`；
+  `Finish()` 里选区为空也会退化成 `Cancelled`）。**新动作只能追加，不要插队或重排。**
+- **工具条按数量驱动，不要退回具名成员**。`RegionSelectForm` 里布局的唯一来源是
+  `BtnCount` / `_btn[]` / `_btnLabels[]`，下标到动作的唯一映射是 `ActionForButton(int)`。
+  **加按钮只需要动 `BtnCount` 和这几张表**；`LayoutToolbar()` 的四级降级
+  （自然标签 → 短标签 → 等比收窄 → 等宽兜底）会自动覆盖新按钮。
+  ⚠️ 不要再写 `_btnSave` / `_btnCopy` 这种成员——§1.7.1 就是因为这个才把
+  OCR/GIF 挤出了工具条。探针也必须用 `ToolbarButtonCountForTest` **遍历**，
+  写死"恰好 4 个"会让新按钮无声地跑到窗口外。
+- **选区的移动/缩放必须"逐条边钳制"**。`ResizeFrom` 单独夹住每条边，
+  而不是先算出矩形再整体 `ClampToClient`——后者会让用户**没抓的那条边也动**，
+  看起来就像选区在"自己跳"。移动用 `ClampToClient`（只改位置不改尺寸）。
+- **`WS_EX_TRANSPARENT` 有两个来源，必须走 `ApplyClickThrough()` 合并**：
+  ① 正在转发滚轮的 180ms 瞬态（`_wheelPassThrough`）；② 跟随模式期间的
+  `ScrollFollowClickThrough`（`_followClickThrough`）。**任何一处直接调
+  `Native.SetClickThrough` 都会把另一处的状态抹掉**，而且窗口样式写漏一次就
+  等于标注层永久失去鼠标。`SetClickThrough` 本身**不碰 `WS_EX_LAYERED`**——
+  旧版本 enable 时加上、disable 时不清，每调用一次就永久 layered。
+- **`AppContext2._quitting` 是必须的**：`StopRecordingIfAny()` 会**同步**触发
+  `GifRecorder.Finished`，而那个处理器会 `ShowDialog` 一个结果窗口。
+  关机路径里弹模态框 = 进程永远退不出去。
 
 ### 3.3 设置持久化
 
@@ -1393,11 +1682,12 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (21/21)** | 编译并运行下面 21 个进程内探针，逐个打印 PASS/FAIL。**源码列表已含 16 个 `.cs`**，并且会自动追加 3 个 WPF 引用（`Gif.cs`/`GifRecorder.cs` 需要） |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (22/22)** | 编译并运行下面 22 个进程内探针，逐个打印 PASS/FAIL。**源码列表已含 18 个 `.cs`**，并且会自动追加 3 个 WPF 引用（`Gif.cs`/`GifRecorder.cs` 需要）。支持 `-Only <名字>` 单跑 |
+| `build\ux_fix_probe.cs` | 进程内 | **ALL UX FIX CHECKS PASSED** | **本轮新增**：四个反馈问题的回归。① 工具条 6 按钮 / 顺序 / 点击落点；② 选区移动 + 8 把手缩放 + 逐边锚定 + 出屏钳制 + 小选区隐藏把手；③ `GifResultForm` 路径可见 / 帧数时长体积 / 复制按钮 / 各种宽度下路径框不出窗 / 空路径不崩；④ 滚轮穿透决策 + `WS_EX_TRANSPARENT` 真置真撤 + 前后 ex-style 逐位相同 + `ScrollFollowClickThrough` 跟随期穿透与退出恢复；⑤ **真实按键**验证 `Esc` 钩子（`keybd_event` 注入 + 泵消息） |
 | `build\gif_delta_probe.cs` | 进程内 | **6/6 PASS** | **本轮新增**：GIF 字节级回填。**第一块的偏移量是 13**（6 字节签名 + 7 字节逻辑屏幕描述符），延时要能被独立解码器读回 |
-| `build\gif_ocr_probe.cs` | 进程内 | **47/47 PASS** | **本轮新增**：GIF（延时 / 循环块 / 合并帧 / 上限）+ OCR（识别 / 放大 / 坐标换算 / 语言标签 / 工作线程超时 / `RawText` 兜底）。**探针必须先 `SetProcessDpiAwarenessContext(-4)` 并把测试字体用 `GraphicsUnit.Pixel` 建**，否则 200% DPI 下文字被裁、OCR 必然空手而归 |
-| `build\gif_recorder_probe.cs` | 进程内 | **29/29 PASS** | **本轮新增**：录制真的在采样（驱动一个会动的 `Form`，静止桌面会合并成 1 帧而假失败）、写出的帧数与解码数一致、帧尺寸等于选区、时长上限、取消、倒计时、极小区域拒绝、**红框没被烤进画面** |
-| `build\ocr_gif_wiring_probe.cs` | 进程内 | **56/56 PASS** | **本轮新增**：接线正确性。`RegionAction` 0/1/2/3 **取值不变**、工具条**仍是 4 个按钮**且不出屏、`O`/`G` 选中新动作而 **`Ctrl+O`/`Ctrl+G` 仍空闲**、原有 `P`/`Ctrl+C`/`Enter`/`Esc` 都没坏、10 个默认热键互不重复、`OcrResultForm` 显示文本、设置窗口读写 + 落盘回环、越界值 `Clamp` |
+| `build\gif_ocr_probe.cs` | 进程内 | **49/49 PASS** | **第七轮新增**：GIF（延时 / 循环块 / 合并帧 / 上限 / 原子写盘）+ OCR（识别 / 放大 / 坐标换算 / 语言标签 / 工作线程超时 / `RawText` 兜底）。**探针必须先 `SetProcessDpiAwarenessContext(-4)` 并把测试字体用 `GraphicsUnit.Pixel` 建**，否则 200% DPI 下文字被裁、OCR 必然空手而归 |
+| `build\gif_recorder_probe.cs` | 进程内 | **29/29 PASS** | **第七轮新增**：录制真的在采样（驱动一个会动的 `Form`，静止桌面会合并成 1 帧而假失败）、写出的帧数与解码数一致、帧尺寸等于选区、时长上限、取消、倒计时、极小区域拒绝、**红框没被烤进画面** |
+| `build\ocr_gif_wiring_probe.cs` | 进程内 | **64/64 PASS** | **第七轮新增，第八轮扩写**：接线正确性。`RegionAction` 0/1/2/3 **取值不变**、工具条有**全部 6 个按钮**（按 `ToolbarButtonCountForTest` 遍历，不再写死四个具名矩形）、点 `识别`/`GIF` 按钮落到与快捷键相同的动作、`O`/`G` 选中新动作而 **`Ctrl+O`/`Ctrl+G` 仍空闲**、原有 `P`/`Ctrl+C`/`Enter`/`Esc` 都没坏、10 个默认热键互不重复、`OcrResultForm` 显示文本、设置窗口读写 + 落盘回环、越界值 `Clamp` |
 
 | `build\tier1_probe.cs` | 进程内 | **78 PASS / 0 FAIL** | **本轮新增**：第一梯队四项功能。9 组：枚举与笔画、撤销重做（多级 + 序号回收）、序号徽标编号、荧光笔（**alpha 独立性**：改透明度不影响其它笔画）、箭头三样式（**按像素差**断言三种样式几何确实不同）、窗口几何（DWM 物理边界）、`PixelAt`、美化器（圆角不泄漏内容用 `BeautifyRadius=0` 差分验证）、设置回环 |
 | `build\layout_cards.cs` | 进程内 | **21 PASS / 0 FAIL** | **本轮新增**：卡片布局健全性。① 每个控件四面都在自己的卡内；② 卡片互不重叠；③ 卡片内容下方无 >40px 空白；④ 溢出页的 `AutoScrollMinSize` 能滚到最后一卡。**这是"卡片底部大片空白"的回归防线** |
@@ -1413,9 +1703,9 @@ Accent   = RGB(232, 160, 0)
 | `build\hotkey_record_probe.cs` | 进程内 | **8/8 PASS** | **快捷键捕获的唯一可靠证据**：真 `WM_KEYDOWN` + 真修饰键态 |
 | `build\text_focus_probe.cs` | 进程内 | **ALL PASS** | 前台正常时文字编辑器存活并落成笔画 |
 | `build\hostile_focus_probe.cs` | 进程内 | **ALL PASS** | **别的进程占着前台时**，overlay 夺回前台、编辑器存活 |
-| `build\pin_probe.cs` | 进程内 | **57 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：贴图。选择器工具条 4 按钮 + `PinToDesktop` 裁切；`PinForm` 几何（缩放上下限、往返无漂移、滚轮 1.12×、光标锚点、拖动、关闭按钮随窗缩、`Esc` 关闭、释放位图）；位图所有权（存活/清引用/幂等/`null` 图）；多贴图互不影响；控制器集成（`PinScreenshot` 跟踪、始终置顶） |
+| `build\pin_probe.cs` | 进程内 | **57 `[PASS]` / 0 `[FAIL]`** | **第五轮新增，第八轮扩写**：贴图。选择器工具条（现在遍历全部按钮查尺寸/在窗内/不重叠）+ `PinToDesktop` 裁切；`PinForm` 几何（缩放上下限、往返无漂移、滚轮 1.12×、光标锚点、拖动、关闭按钮随窗缩、`Esc` 关闭、释放位图）；位图所有权（存活/清引用/幂等/`null` 图）；多贴图互不影响；控制器集成（`PinScreenshot` 跟踪、始终置顶） |
 | `build\typing_probe.cs` | 进程内 | **19 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：打字时单键命令不抢键。命令键清单 `L/P/O/E/A/B/1/M/R/T/F/0`；`Tab` 不闩 `_tabHeld`；`WM_CHAR` 送入后文字成笔画 |
-| `build\measure_toolbar.cs` | 进程内 | **ALL TOOLBAR MEASUREMENTS PASSED**（189 `[PASS]` / 0 `[FAIL]`） | **本轮新增**：5 种桌面宽度（2880/1920/1280/900/640）× 3 种默认动作，用 `TextRenderer.MeasureText` 量**每个按钮自己的标签**是否真的装得下。这是 §1.5.5 工具条标签被裁切的**回归防线**——老探针只查"不重叠、在窗内"，几何全对而文字全被裁 |
+| `build\measure_toolbar.cs` | 进程内 | **ALL TOOLBAR MEASUREMENTS PASSED** | **第五轮新增，第八轮扩写**：5 种桌面宽度（2880/1920/1280/900/640）× **5 种默认动作**（新增 `Ocr` / `RecordGif`）× **6 个按钮**，用 `TextRenderer.MeasureText` 量**每个按钮自己的标签**是否真的装得下。这是 §1.5.5 工具条标签被裁切的**回归防线**——老探针只查"不重叠、在窗内"，几何全对而文字全被裁 |
 | `build\render_ui.cs` | 诊断 | — | 逐页渲染 PNG → `build\shots\render\`，**供人眼看** |
 | `build\render_scroll.cs` | 诊断 | — | **本轮新增**：按 `scrollY` 渲染设置页的**真实视口**（`render_ui.cs` 渲染的是整页全高）。正是它截到了 `_chkSmooth` 与说明文字重叠——纯算术探针测不到这种缺陷 |
 | **`build\run_feasibility.ps1`** | **可行性入口** | **ALL FEASIBILITY PROBES PASSED (4 个 / 38 条)** | **本轮新增**：跑下面 4 个**独立**探针（不编译程序源码）。它们量的是**操作系统能力**而不是程序行为，所以失败的含义是"本机/本 OS 版本没有这个 API"，不是"程序回归了"，因此刻意**不放进 `run_probes.ps1`**。`gif_probe` 需要额外的 WPF 引用（`WindowsBase.dll` 在 **`WPF\` 子目录**而不是 Framework64 根目录；`System.Xaml.dll` 必须取 Framework64 的，GAC 那份不是文件，会 `error CS0006`） |
@@ -1456,18 +1746,33 @@ Accent   = RGB(232, 160, 0)
 
 > 按**倒序**排列：`5.0` 是本轮，越往后越早。
 
-### 5.0 本轮（构建与写盘健壮性加固）
+### 5.0 本轮（四个交互缺陷修复）
 
 | 文件 | 变更 |
 |---|---|
-| `src\Gif.cs` | `Gif.Encode` 的落盘改为**原子写**：先写 `path + ".<guid>.tmp"`（`FileMode.CreateNew` + `FileShare.None`），再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`）；`finally` 删除残留 tmp。**不再用 `FileMode.Create` 直接截断目标**（§1.8.1） |
-| `build\gif_ocr_probe.cs` | 47 → **49** 项。新增：目标被目录占用时 `Encode` **返回错误**、**目标本身未被破坏**、**不残留 `.tmp`** |
-| `build\build.ps1` | 新增 `$StageExe` + `Remove-StageQuietly`；`/out` 改为暂存路径，**编译成功后才 `Move-Item` 发布到 `dist\ScreenPen.exe`**；失败消息明确写 "`$OutExe` was left untouched"；发布被占用时提示 "is ScreenPen.exe still running?"（§1.8.2） |
-| `build\run_probes.ps1` | 去掉硬编码的 `C:\Windows\Microsoft.NET\Framework64\...\csc.exe`，改为与 `build.ps1` 相同的**动态查找**（Framework64 → Framework），找不到即抛明确错误；新增一行 `compiler : <路径>`（§1.8.3） |
-| `HANDOVER.md` | **§1.8（本轮三条改动 + 验证表）** + 头部版本/体积/sha256 更新 + 本节 |
-| `dist\ScreenPen.exe` | 301,568 → **302,080 B**（重新构建，非手改） |
+| `src\RegionSelectForm.cs` | 工具条由**四个具名成员**改为**数量驱动**（`BtnCount = 6` + `_btn[]` + `_btnLabels[]` + `ActionForButton`），新增 **`Ocr = 3` / `Gif = 4`** 两个按钮位（`BtnCancel` 变 5），`PrimaryIndex()` 支持新默认动作；新增选区编辑：`enum SelDrag`、`HandleRect` / `HitHandle`（角优先）/ `HandlesVisible` / `ResizeFrom`（**逐边钳制**）/ `ClampToClient` / `CursorForDrag` / `UpdateSelectionCursor`；鼠标逻辑拆成 `HandleLeftDown` / `HandleMouseMove` / `HandleLeftUp` 供探针驱动真实手势；测试缝新增 `ToolbarButtonCountForTest` / `ToolbarButtonBoundsForTest` / `OcrButtonBounds` / `GifButtonBounds` / `OcrLabelForTest` / `GifLabelForTest` / `HandleCountForTest` / `HandleBoundsForTest` / `HandlesVisibleForTest` / `CursorAtForTest` / `ClickToolbarButtonForTest` / `SimulatePressAndDrag` / `SimulateRelease`（§1.9.1、§1.9.2） |
+| `src\GifResultForm.cs` | **新增（第 18 个源文件）**。GIF 结果窗口：文件名 + `N 帧 N 秒 体积` + **只读可选中的完整路径** + `复制路径` / `在文件夹中显示`（`explorer /select` 高亮文件）/ `打开动图` / `关闭`。**布局全用显式 `SetBounds`**（`Dock` 的反 z-order 解析不可控）；`LayoutChildren()` 开头有 `if (_head == null || _close == null) return;`，因为构造里设 `ClientSize` 会**先触发 `OnResize`**（§1.9.3） |
+| `src\KeyboardHook.cs` | **新增（第 19 个源文件）**。录制期间临时挂 `WH_KEYBOARD_LL` 只认 `Esc`；**回调里不做事**（`SynchronizationContext.Post` 转投，否则超过 `LowLevelHooksTimeout` 会被系统摘钩）；**吞掉该 `Esc`**；委托存字段防 GC（§1.9.4） |
+| `src\AppContext2.cs` | `rec.Finished` 里的气泡换成 `GifResultForm.ShowResult(...)`（`frames`/`seconds` 在 `Dispose` 前读出）；新增 `_quitting` 标志（关机路径不能弹模态框）；`StartRecordingKeyWatch` / `StopRecordingKeyWatch` / `IsRecordingGif` / `StopGifRecording`；托盘新增 **停止 GIF 录制**（`_stopGifItem`，仅录制期可用）；`RegionScreenshot` 开头：**第二次触发 GIF = 停止**（§1.9.3、§1.9.4） |
+| `src\OverlayForm.cs` | 新增 `ForwardWheel` / `BeginWheelPassThrough` / `EndWheelPassThrough` / `ApplyClickThrough` + `_wheelPassThrough` / `_followClickThrough` / `_clickThroughApplied` / `_wheelForwardTick` / `_wheelRestoreTimer`（180ms）；`OnMouseWheel` 改走 `ForwardWheel`；`StartScrollFollow` / `StopScrollFollow` 接上 `ScrollFollowClickThrough`（**此前是死开关**）；测试缝 `ForwardWheelForTest` / `BeginWheelPassThroughForTest` / `EndWheelPassThroughForTest` / `ClickThroughForTest` / `FollowClickThroughForTest`（§1.9.5、§1.9.6） |
+| `src\Native.cs` | `SetClickThrough` **不再碰 `WS_EX_LAYERED`**（原来 enable 时加、disable 时不清，等于永久 layered），加 `SWP_FRAMECHANGED` 让 ex-style 真正生效，状态未变则短路；`IsScrollableWindowUnder` 增加**本进程 PID 判定**（含 root 窗口），不再把自己的窗口当成"可滚动文档"；新增 `SendEscape()`（`keybd_event` 注入真实 `Esc`，供探针验证钩子）；补齐 `SWP_NOZORDER` / `SWP_FRAMECHANGED` 常量（§1.9.5） |
+| `src\Config.cs` | `ScrollFollowClickThrough` 默认 `true` → **`false`**，注释说明"穿透会让跟随期间画不了新标注，默认应该保留标注能力"（§1.9.6） |
+| `src\SettingsStore.cs` | 该键读写迁到 **`ScrollFollowClickThroughV2`**：老配置里那个从未生效过的 `true` 会被忽略，老用户回到安全默认值（§1.9.6） |
+| `src\SettingsForm.cs` | 复选框文案改为 **"跟随期间让鼠标点击穿透到下方窗口（可滚动、点链接；此时无法再画新标注）"**，把代价写进 UI |
+| `build\ux_fix_probe.cs` | **新增**。五个小节覆盖四个反馈问题 + `Esc` 钩子（§1.9.7） |
+| `build\ocr_gif_wiring_probe.cs` | 47 → **64** 项。工具条 6 按钮、按数量遍历、点击 `识别`/`GIF` 按钮的落点、`ButtonIndexAtForTest` 边界 |
+| `build\pin_probe.cs` | 工具条检查从四个具名矩形改为**遍历 `ToolbarButtonCountForTest`**（尺寸/在窗内/两两不重叠） |
+| `build\measure_toolbar.cs` | 默认动作 3 → **5** 种（加 `Ocr` / `RecordGif`），按钮 4 → **6** 个，粗体主按钮改为 `PrimaryIndexFor(act)` |
+| `build\run_probes.ps1` | `$srcs` 加 `GifResultForm.cs` / `KeyboardHook.cs`；`$probes` 加 `ux_fix_probe`；新增 **`-Only <名字>`** 参数单跑探针 |
+| `build\run_render.ps1` | **新增**。把 `render_pin` / `render_ui` / `render_scroll` 的编译运行固定下来（**排除 `Program.cs`**，加 3 个 WPF 引用），产物落在 `build\shots\render\`。这些渲染器不在 `$probes` 里，以前只能手敲编译命令 |
+| `build\capture_ui.py` | 新增 `client_crop()`：用 `GetClientRect` + `ClientToScreen` 裁掉非客户区（200% DPI 下是顶部 58px 的标题栏），让 PNG 与 `verify_ui.py` 的客户端常量一致；`capture()` 改为返回图像对象；翻页后**校验页面真的变了**，没变就重试（第一次合成点击有时被激活吞掉，曾把 `01_brush.png` 存成快捷键页）（§1.9.8） |
+| `build\verify_ui.py` | 主文字阈值 8000 → **4000**。旧阈值是被标题栏白送的像素撑住的，裁掉标题栏后 `关于` 页只有 5166 px（§1.9.8） |
+| `build\verify_readme.py` | 跑之前**字节备份**用户配置、报告前恢复（原来跑一次就等于重置用户设置）；新增 `JSON_KEY_OVERRIDES` 声明 `ScrollFollowClickThrough` → `...V2` 这处**有意的**键名不一致（§1.9.6、§1.9.8） |
+| `README.md` | 工具条 4 → 6 按钮（含"框选后仍可移动/缩放"小节）；新增**"滚轮是怎么穿到下层窗口的"**说明；GIF 章节补"怎么停下来"四条 + 结果窗口截图式说明；OCR 章节说明工具条入口；配置样例键名改 `V2`；源码表加 2 个新文件（17 → **19**）；探针表加 `ux_fix_probe` |
+| `HANDOVER.md` | **§1.9（本轮五个根因 + 验证表）**、§1.7.1 加"已被用户推翻"标记、§0 源码数 17 → 19 / 探针数 21 → 22、§4 测试资产表、本节、头部版本/体积/sha256 更新 |
+| `dist\ScreenPen.exe` | 302,080 → **314,880 B**（重新构建，非手改） |
 
-### 5.1 上一轮（文字识别 OCR + 录制 GIF）
+### 5.1 上一轮（构建与写盘健壮性加固）
 
 | 文件 | 变更 |
 |---|---|

@@ -217,6 +217,30 @@ namespace ScreenPen
         int _followLastDx, _followLastDy;
         public event EventHandler ScrollFollowChanged;
 
+        /// <summary>
+        /// True while a wheel is being forwarded, so the overlay has to be
+        /// invisible to hit-testing for the event to reach the document. See
+        /// <see cref="ForwardWheel"/>.
+        /// </summary>
+        bool _wheelPassThrough;
+
+        /// <summary>
+        /// True while scroll-follow mode wants the overlay click-through for as
+        /// long as it is active (Settings.ScrollFollowClickThrough). Kept
+        /// separate from <see cref="_wheelPassThrough"/> because the two have
+        /// different lifetimes and both feed <see cref="ApplyClickThrough"/>.
+        /// </summary>
+        bool _followClickThrough;
+
+        /// <summary>The click-through state the window style currently has.</summary>
+        bool _clickThroughApplied;
+
+        /// <summary>Tick of the last forwarded wheel, used to drop the echo.</summary>
+        int _wheelForwardTick;
+
+        /// <summary>Restores the overlay's normal input handling after a forward.</summary>
+        Timer _wheelRestoreTimer;
+
         // ---- edge pan -------------------------------------------------------
         const int EdgeZone = 24;     // px from the viewport edge that triggers pan
         const int EdgeSpeed = 14;    // px per tick
@@ -372,6 +396,12 @@ namespace ScreenPen
             _followTimer = new Timer();
             _followTimer.Interval = 140;
             _followTimer.Tick += (s, e) => FollowTick();
+
+            // One-shot timer that puts the overlay back in front of the mouse
+            // once a forwarded wheel event has been delivered. See ForwardWheel.
+            _wheelRestoreTimer = new Timer();
+            _wheelRestoreTimer.Interval = WheelPassThroughMs;
+            _wheelRestoreTimer.Tick += (s, e) => EndWheelPassThrough();
 
             KeyPreview = true;
         }
@@ -822,6 +852,14 @@ namespace ScreenPen
             if (!Native.SetExcludedFromCapture(Handle, true) && _followRefusal.Length == 0)
                 _followRefusal = "系统不支持抓屏排除，跟随滚动可能不准";
 
+            // ScrollFollowClickThrough existed in the settings file and in the
+            // settings UI but was read by nothing at all: ticking it changed
+            // exactly nothing. Wire it up as documented - while follow mode is
+            // active the overlay steps out of the way of the mouse, so the page
+            // underneath can be scrolled and its links clicked.
+            _followClickThrough = _cfg.ScrollFollowClickThrough;
+            ApplyClickThrough();
+
             SeedFollowProfiles();
             _followTimer.Start();
             RaiseScrollFollowChanged();
@@ -832,6 +870,8 @@ namespace ScreenPen
             if (!_scrollFollow) { _followTimer.Stop(); return; }
             _scrollFollow = false;
             _followTimer.Stop();
+            _followClickThrough = false;
+            ApplyClickThrough();
             try { Native.SetExcludedFromCapture(Handle, false); }
             catch { }
 
@@ -2263,14 +2303,10 @@ namespace ScreenPen
 
             if (passToDocument)
             {
-                // Forward the wheel to the real window underneath. The
-                // follow-timer notices the resulting scroll and shifts the
-                // annotations to match.
                 Point screen = Cursor.Position;
-                if (Native.IsScrollableWindowUnder(screen))
+                if (ForwardWheel(screen, e.Delta))
                 {
                     _followRefusal = "";
-                    Native.SendWheel(e.Delta, false);
                     NoteManualScroll();
                     return;
                 }
@@ -2288,6 +2324,123 @@ namespace ScreenPen
 
             AdjustPenWidth(e.Delta > 0 ? 1 : -1);
         }
+
+        /// <summary>
+        /// How long the overlay stays click-through after a wheel forward.
+        /// Long enough for the injected event to be delivered and consumed by
+        /// the document, short enough that a stray click right after a scroll
+        /// still lands on the annotation layer.
+        /// </summary>
+        const int WheelPassThroughMs = 180;
+
+        /// <summary>
+        /// Hands a wheel notch to the window underneath and reports whether it
+        /// was forwarded.
+        ///
+        /// The overlay is a full-screen topmost form, so <c>SendInput</c>'s
+        /// wheel is hit-tested straight back onto us: our own OnMouseWheel
+        /// forwards it again, and again, while the document never moves. That
+        /// feedback loop - not the correlation code - is what made "标注时滚轮
+        /// 上下滑动页面" appear broken. Setting WS_EX_TRANSPARENT makes
+        /// hit-testing skip the overlay entirely for the duration of the
+        /// injection, so the event reaches the real window; the style is put
+        /// back a moment later by <see cref="_wheelRestoreTimer"/>, once the
+        /// event has been processed.
+        ///
+        /// While the overlay is click-through it also cannot receive the echo of
+        /// its own injection, which is what breaks the loop. The tick guard is
+        /// belt and braces for the case where a user scrolls and the style was
+        /// somehow already restored.
+        /// </summary>
+        bool ForwardWheel(Point screen, int delta)
+        {
+            // Drop the echo of a wheel we injected ourselves. Without this the
+            // very first notch would bounce forever.
+            if (Environment.TickCount - _wheelForwardTick < WheelPassThroughMs)
+                return true;
+
+            // Probe for a scrollable window *before* touching our own style.
+            // With the overlay still opaque to hit-testing this would find the
+            // overlay itself, which is exactly why the old code forwarded a
+            // wheel onto a page it had never confirmed existed.
+            BeginWheelPassThrough();
+            bool scrollable = Native.IsScrollableWindowUnder(screen);
+            if (!scrollable)
+            {
+                EndWheelPassThrough();
+                return false;
+            }
+
+            _wheelForwardTick = Environment.TickCount;
+            Native.SendWheel(delta, false);
+
+            // Restart the restore window on every notch so a continuous scroll
+            // stays click-through throughout, instead of flickering in and out
+            // between notches.
+            _wheelRestoreTimer.Stop();
+            _wheelRestoreTimer.Start();
+            return true;
+        }
+
+        void BeginWheelPassThrough()
+        {
+            _wheelPassThrough = true;
+            ApplyClickThrough();
+        }
+
+        void EndWheelPassThrough()
+        {
+            _wheelRestoreTimer.Stop();
+            if (!_wheelPassThrough) return;
+            _wheelPassThrough = false;
+            ApplyClickThrough();
+        }
+
+        /// <summary>
+        /// Reconciles the window's WS_EX_TRANSPARENT flag with the two reasons
+        /// the overlay may need to be invisible to the mouse: a wheel being
+        /// forwarded right now, or scroll-follow mode asking for it for its whole
+        /// lifetime. Routing both through one place means neither can clear the
+        /// other's state, and the style is only written when it actually changes.
+        /// </summary>
+        void ApplyClickThrough()
+        {
+            bool want = _wheelPassThrough || _followClickThrough;
+            if (want == _clickThroughApplied) return;
+            _clickThroughApplied = want;
+            Native.SetClickThrough(Handle, want);
+        }
+
+        /// <summary>Test seam: whether the overlay is currently click-through.</summary>
+        internal bool ClickThroughForTest { get { return _clickThroughApplied; } }
+
+        /// <summary>Test seam: whether a wheel is mid-flight.</summary>
+        internal bool WheelPassThroughForTest { get { return _wheelPassThrough; } }
+
+        /// <summary>Test seam: exercises the real forwarding decision.</summary>
+        internal bool ForwardWheelForTest(Point screen, int delta)
+        {
+            return ForwardWheel(screen, delta);
+        }
+
+        /// <summary>Test seam: forces the click-through window to end.</summary>
+        internal void EndWheelPassThroughForTest()
+        {
+            EndWheelPassThrough();
+        }
+
+        /// <summary>
+        /// Test seam: enters the click-through window without injecting a wheel,
+        /// so the style change can be asserted against the real window style
+        /// instead of only against the flag that guards it.
+        /// </summary>
+        internal void BeginWheelPassThroughForTest()
+        {
+            BeginWheelPassThrough();
+        }
+
+        /// <summary>Test seam: whether follow mode is holding the overlay open.</summary>
+        internal bool FollowClickThroughForTest { get { return _followClickThrough; } }
 
         // =====================================================================
         //  Text tool (inline editor)

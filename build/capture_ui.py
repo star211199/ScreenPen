@@ -54,11 +54,41 @@ def find_windows(pid):
     return result
 
 
-def capture(hwnd, rect, path):
+def client_crop(hwnd):
+    """Offset of the client area inside the whole-window image.
+
+    PrintWindow renders the window *including* its non-client frame, so the
+    resulting PNG starts with the OS caption (a light band, ~62px at 200% DPI)
+    and the app's own content only begins below it. verify_ui.py's geometry
+    constants (NAV_W, HEADER_H, FOOTER_H) are all client-relative, so an
+    uncropped image makes "header band is a card" measure the caption instead of
+    the app's header. Returns (left, top, width, height) in window coordinates.
+    """
+    wr = wt.RECT()
+    cr = wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(wr))
+    user32.GetClientRect(hwnd, ctypes.byref(cr))
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    origin = POINT(0, 0)
+    user32.ClientToScreen(hwnd, ctypes.byref(origin))
+
+    ox = origin.x - wr.left
+    oy = origin.y - wr.top
+    cw = cr.right - cr.left
+    ch = cr.bottom - cr.top
+    if cw <= 0 or ch <= 0 or ox < 0 or oy < 0:
+        return None
+    return (ox, oy, cw, ch)
+
+
+def capture(hwnd, rect, path, crop=None):
     w = rect.right - rect.left
     h = rect.bottom - rect.top
     if w <= 0 or h <= 0:
-        return False
+        return None
     hdc = user32.GetWindowDC(hwnd)
     mdc = gdi32.CreateCompatibleDC(hdc)
     bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
@@ -86,12 +116,20 @@ def capture(hwnd, rect, path):
     gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
 
     img = Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1)
-    img.convert("RGB").save(path)
+    img = img.convert("RGB")
+
+    if crop is not None:
+        ox, oy, cw, ch = crop
+        if ox + cw <= w and oy + ch <= h:
+            img = img.crop((ox, oy, ox + cw, oy + ch))
+
+    img.save(path)
+    return img
 
     gdi32.DeleteObject(bmp)
     gdi32.DeleteDC(mdc)
     user32.ReleaseDC(hwnd, hdc)
-    return True
+    return img
 
 
 def click(hwnd, x, y):
@@ -177,6 +215,12 @@ def main():
     rect_local = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect_local))
 
+    crop = client_crop(hwnd)
+    if crop is None:
+        print("WARN: could not resolve the client area; capturing the whole window")
+    else:
+        print(f"client area: {crop[2]}x{crop[3]} at +{crop[0]}+{crop[1]} inside the window")
+
     buttons = find_nav_buttons(hwnd)
     print(f"nav buttons found: {[b[0] for b in buttons]}")
     if len(buttons) != len(NAV_LABELS):
@@ -184,12 +228,30 @@ def main():
 
     # The first page is already selected on launch, so capture it as-is, then
     # click each remaining rail entry and capture the result.
+    #
+    # The click is verified, not assumed: the first synthetic click after
+    # SetForegroundWindow is sometimes swallowed by the activation, and the
+    # result was a page saved under the wrong name (01_brush.png showing 快捷键).
+    # A capture identical to the previous page means the switch did not happen,
+    # so click again.
+    previous = None
     for i, (label, bx, by) in enumerate(buttons):
-        if i > 0:
-            click(hwnd, bx, by)
-        ok = capture(hwnd, rect_local, OUT / f"{i:02d}_{SHOT_NAMES[i]}.png")
-        print(f"{'captured' if ok else 'FAILED  '} {i:02d}_{SHOT_NAMES[i]}.png"
-              f"  (nav '{label}' at {bx},{by})")
+        img = None
+        for attempt in range(3):
+            if i > 0 or attempt > 0:
+                click(hwnd, bx, by)
+            img = capture(hwnd, rect_local, OUT / f"{i:02d}_{SHOT_NAMES[i]}.png", crop)
+            if img is None:
+                break
+            if previous is None or img.tobytes() != previous.tobytes():
+                break
+            print(f"  retry {attempt + 1}: page did not change after clicking '{label}'")
+
+        if img is None:
+            print(f"FAILED   {i:02d}_{SHOT_NAMES[i]}.png")
+        else:
+            print(f"captured {i:02d}_{SHOT_NAMES[i]}.png  (nav '{label}' at {bx},{by})")
+            previous = img
 
     proc.terminate()
     try:

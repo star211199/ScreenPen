@@ -2324,7 +2324,7 @@ namespace ScreenPen
 
             _chkClickThrough = new CheckBox
             {
-                Text = "让鼠标点击穿透到下方窗口（可直接滚动、点链接）",
+                Text = "跟随期间让鼠标点击穿透到下方窗口（可滚动、点链接；此时无法再画新标注）",
                 ForeColor = TextMain,
                 AutoSize = true,
                 Location = new Point(16, y),

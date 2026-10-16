@@ -3,8 +3,8 @@
 // The wiring is the risky part, not the engines:
 //   * RegionAction.Ocr/RecordGif must not disturb the existing 0/1/2/3 values
 //     (saved state and probes depend on them)
-//   * the region toolbar must STILL be exactly four buttons -- five would push
-//     the row past the width it can shrink to
+//   * the region toolbar must offer all six actions -- 保存/复制/贴图/识别/GIF/
+//     取消 -- and the Ocr/Gif buttons must hit-test to the right action
 //   * the selector must map bare O and G to the new actions, without stealing
 //     Ctrl+O / Ctrl+G, and without breaking Esc/Enter/P/Ctrl+C/arrows/Ctrl+A
 //   * the new hotkeys must be registrable and unique by default
@@ -46,6 +46,11 @@ namespace ScreenPen.Probes
             return Math.Max(0, (u.Width - (sel.CancelButtonBounds.Right - sel.SaveButtonBounds.Left)) / 2);
         }
 
+        static Point Center(Rectangle r)
+        {
+            return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+        }
+
         [STAThread]
         static int Main()
         {
@@ -63,7 +68,7 @@ namespace ScreenPen.Probes
 
             // ---------------------------------------------------------------
             Console.WriteLine();
-            Console.WriteLine("-- the toolbar is still exactly four buttons --");
+            Console.WriteLine("-- the toolbar exposes every action --");
             Settings cfg = new Settings();
             Rectangle desktop = new Rectangle(0, 0, 1280, 800);
             Bitmap backdrop = new Bitmap(desktop.Width, desktop.Height);
@@ -72,18 +77,46 @@ namespace ScreenPen.Probes
             using (RegionSelectForm sel = new RegionSelectForm(cfg, desktop, backdrop, RegionAction.SaveToFile))
             {
                 string[] labels = sel.ToolbarLabelsForTest;
-                Check(labels.Length == 4, "the toolbar has four buttons", "count=" + labels.Length);
+                Check(labels.Length == 6, "the toolbar has six buttons", "count=" + labels.Length);
+                Check(sel.ToolbarButtonCountForTest == labels.Length,
+                      "the button count and the label count agree",
+                      sel.ToolbarButtonCountForTest + " vs " + labels.Length);
 
                 // A selection has to exist before the toolbar is laid out, so
                 // select everything first and only then measure it.
                 SendKey(sel, Keys.A, true, false, false);
                 Check(sel.HasSelectionForTest, "Ctrl+A still selects everything", "ok");
 
-                Check(sel.SaveButtonBounds.Width > 0 && sel.CopyButtonBounds.Width > 0 &&
-                      sel.PinButtonBounds.Width > 0 && sel.CancelButtonBounds.Width > 0,
-                      "all four buttons have a layout",
+                bool sized = true;
+                for (int i = 0; i < sel.ToolbarButtonCountForTest; i++)
+                {
+                    Rectangle ri = sel.ToolbarButtonBoundsForTest(i);
+                    if (ri.Width <= 0 || ri.Height <= 0) sized = false;
+                }
+                Check(sized, "every button has a layout",
                       "save=" + sel.SaveButtonBounds.Width + " copy=" + sel.CopyButtonBounds.Width +
-                      " pin=" + sel.PinButtonBounds.Width + " cancel=" + sel.CancelButtonBounds.Width);
+                      " pin=" + sel.PinButtonBounds.Width + " ocr=" + sel.OcrButtonBounds.Width +
+                      " gif=" + sel.GifButtonBounds.Width + " cancel=" + sel.CancelButtonBounds.Width);
+
+                // Clicking the OCR / GIF buttons must reach the same actions as
+                // their keyboard shortcuts. These are the two buttons the user
+                // asked for: they were keyboard-only before, which is exactly why
+                // nobody could find them.
+                Check(sel.ButtonIndexAtForTest(Center(sel.OcrButtonBounds)) == 3,
+                      "the OCR button hit-tests to index 3",
+                      sel.ButtonIndexAtForTest(Center(sel.OcrButtonBounds)).ToString());
+                Check(sel.ButtonIndexAtForTest(Center(sel.GifButtonBounds)) == 4,
+                      "the GIF button hit-tests to index 4",
+                      sel.ButtonIndexAtForTest(Center(sel.GifButtonBounds)).ToString());
+                Check(sel.ButtonIndexAtForTest(Center(sel.CancelButtonBounds)) == 5,
+                      "the cancel button hit-tests to index 5",
+                      sel.ButtonIndexAtForTest(Center(sel.CancelButtonBounds)).ToString());
+                Check(sel.ButtonIndexAtForTest(new Point(2, 2)) == -1,
+                      "a point outside the toolbar hits no button",
+                      sel.ButtonIndexAtForTest(new Point(2, 2)).ToString());
+                Check(sel.OcrLabelForTest.Contains("识别") && sel.GifLabelForTest.Contains("GIF"),
+                      "the new buttons carry readable captions",
+                      sel.OcrLabelForTest + " / " + sel.GifLabelForTest);
 
                 // ToolbarBoundsForTest inflates the row by the shadow padding, so
                 // it can legitimately sit up to that padding outside the 6px
@@ -107,6 +140,25 @@ namespace ScreenPen.Probes
                 SendKey(sel, Keys.O, false, false, false);
                 Check(sel.ActionTaken == RegionAction.Ocr,
                       "bare O selects OCR", sel.ActionTaken.ToString());
+            }
+
+            // The buttons themselves must commit the same actions.
+            using (RegionSelectForm sel = new RegionSelectForm(cfg, desktop, backdrop, RegionAction.SaveToFile))
+            {
+                SendKey(sel, Keys.A, true, false, false);
+                sel.SimulateDrag(new Point(40, 40), new Point(900, 600));
+                sel.ClickToolbarButtonForTest(3);
+                Check(sel.ActionTaken == RegionAction.Ocr,
+                      "clicking the 识别 button selects OCR", sel.ActionTaken.ToString());
+            }
+
+            using (RegionSelectForm sel = new RegionSelectForm(cfg, desktop, backdrop, RegionAction.SaveToFile))
+            {
+                SendKey(sel, Keys.A, true, false, false);
+                sel.SimulateDrag(new Point(40, 40), new Point(900, 600));
+                sel.ClickToolbarButtonForTest(4);
+                Check(sel.ActionTaken == RegionAction.RecordGif,
+                      "clicking the GIF button selects GIF recording", sel.ActionTaken.ToString());
             }
 
             using (RegionSelectForm sel = new RegionSelectForm(cfg, desktop, backdrop, RegionAction.SaveToFile))

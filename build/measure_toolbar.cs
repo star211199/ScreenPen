@@ -23,6 +23,19 @@ static class MeasureToolbar
 
     static int fails;
 
+    /// <summary>
+    /// Index of the button the current default action commits, i.e. the one drawn
+    /// bold. Mirrors RegionSelectForm.PrimaryIndex, which is private.
+    /// </summary>
+    static int PrimaryIndexFor(RegionAction act)
+    {
+        if (act == RegionAction.CopyToClipboard) return 1;
+        if (act == RegionAction.PinToDesktop) return 2;
+        if (act == RegionAction.Ocr) return 3;
+        if (act == RegionAction.RecordGif) return 4;
+        return 0;
+    }
+
     static void Check(bool ok, string what, string detail)
     {
         Console.WriteLine((ok ? "  [PASS] " : "  [FAIL] ") + what
@@ -49,10 +62,12 @@ static class MeasureToolbar
         Settings cfg = new Settings();
         cfg.Clamp();
 
-        // Each RegionAction so that every branch of SaveLabel/CopyLabel/PinLabel
-        // is exercised: the " (Enter)" form is the widest of each pair.
+        // Each RegionAction so that every branch of SaveLabel/CopyLabel/PinLabel/
+        // OcrLabel/GifLabel is exercised: the " (Enter)" form is the widest of
+        // each pair, and it is the one that would clip first.
         RegionAction[] defaults = new RegionAction[] {
-            RegionAction.SaveToFile, RegionAction.CopyToClipboard, RegionAction.PinToDesktop
+            RegionAction.SaveToFile, RegionAction.CopyToClipboard,
+            RegionAction.PinToDesktop, RegionAction.Ocr, RegionAction.RecordGif
         };
 
         // Desktop widths to try, including one narrow enough to force shrink.
@@ -80,13 +95,13 @@ static class MeasureToolbar
                 Application.DoEvents();
 
                 string[] labels = sel.ToolbarLabelsForTest;
-                Rectangle[] rects = new Rectangle[] {
-                    sel.SaveButtonBounds, sel.CopyButtonBounds,
-                    sel.PinButtonBounds, sel.CancelButtonBounds
-                };
-                Check(labels != null && labels.Length == 4,
-                      wh[0] + "px " + act + ": the toolbar recorded its own labels",
-                      labels == null ? "null" : labels.Length.ToString());
+                int n = sel.ToolbarButtonCountForTest;
+                Rectangle[] rects = new Rectangle[n];
+                for (int i = 0; i < n; i++) rects[i] = sel.ToolbarButtonBoundsForTest(i);
+
+                Check(labels != null && labels.Length == n && n == 6,
+                      wh[0] + "px " + act + ": the toolbar recorded all six labels",
+                      labels == null ? "null" : labels.Length + " label(s), " + n + " button(s)");
 
                 // The labels must fit whenever the row was laid out at its
                 // natural width. On a genuinely small desktop LayoutToolbar
@@ -95,11 +110,13 @@ static class MeasureToolbar
                 // the form itself did not have to shrink.
                 bool roomy = !sel.ToolbarShrunkForTest;
 
-                for (int i = 0; i < 4; i++)
+                // The primary button - the one Enter commits - is drawn bold.
+                int primary = PrimaryIndexFor(act);
+
+                for (int i = 0; i < n && i < labels.Length; i++)
                 {
                     using (Font f = new Font("Microsoft YaHei UI", 8.6f,
-                                 i == 2 && act == RegionAction.PinToDesktop
-                                     ? FontStyle.Bold : FontStyle.Regular))
+                                 i == primary ? FontStyle.Bold : FontStyle.Regular))
                     {
                         Size need = TextRenderer.MeasureText(labels[i], f,
                             new Size(int.MaxValue, int.MaxValue),
@@ -115,14 +132,14 @@ static class MeasureToolbar
 
                 Rectangle client = new Rectangle(0, 0, sel.ClientSize.Width,
                                                  sel.ClientSize.Height);
-                Check(client.Contains(rects[0]) && client.Contains(rects[1]) &&
-                      client.Contains(rects[2]) && client.Contains(rects[3]),
-                      wh[0] + "px " + act + ": all four buttons inside the window", "");
-
-                bool overlap =
-                    rects[2].IntersectsWith(rects[0]) || rects[2].IntersectsWith(rects[1]) ||
-                    rects[2].IntersectsWith(rects[3]) || rects[0].IntersectsWith(rects[1]) ||
-                    rects[0].IntersectsWith(rects[3]) || rects[1].IntersectsWith(rects[3]);
+                bool allInside = true, overlap = false;
+                for (int i = 0; i < n; i++)
+                {
+                    if (!client.Contains(rects[i])) allInside = false;
+                    for (int j = i + 1; j < n; j++)
+                        if (rects[i].IntersectsWith(rects[j])) overlap = true;
+                }
+                Check(allInside, wh[0] + "px " + act + ": all " + n + " buttons inside the window", "");
                 Check(!overlap, wh[0] + "px " + act + ": no two buttons overlap", "");
 
                 // Regression guard for the reported defect: a desktop of 1280 px

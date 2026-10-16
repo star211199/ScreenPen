@@ -281,8 +281,15 @@ namespace ScreenPen
         /// adjusts pen width).
         /// </summary>
         public bool WheelScrollsDocument = true;
-        /// <summary>Set the overlay click-through while in scroll-follow mode.</summary>
-        public bool ScrollFollowClickThrough = true;
+        /// <summary>
+        /// Set the overlay click-through while in scroll-follow mode, so the page
+        /// underneath can be scrolled and its links clicked.
+        ///
+        /// Off by default: click-through is per-window, so turning it on also
+        /// means no new annotation can be drawn until follow mode is left. The
+        /// default should be the one that keeps annotating possible.
+        /// </summary>
+        public bool ScrollFollowClickThrough = false;
 
         // ---- colour helpers -------------------------------------------------
 

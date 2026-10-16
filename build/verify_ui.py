@@ -94,9 +94,17 @@ for name, a in imgs.items():
           f"{near(footer, CARD).mean():.0%}")
 
     # --- text presence ------------------------------------------------------
+    # The point of these two is "the page is not blank". The primary-text floor
+    # used to be 8000, which only held because the screenshots still carried the
+    # OS caption: its dark title text sits right on TEXTMAIN and was contributing
+    # a few thousand pixels to every page. capture_ui.py now crops to the client
+    # area, so the floor has to reflect real pages. 关于 is the sparsest of the
+    # six (5166 px - it is mostly secondary-colour prose); the next lowest is
+    # 10304. 4000 clears "blank" with room to spare and stays well under every
+    # real page.
     bright = near(a, TEXTMAIN, 45).sum()
     sub = near(a, TEXTSUB, 45).sum()
-    check("page has primary text", bright > 8000, f"{bright} px")
+    check("page has primary text", bright > 4000, f"{bright} px")
     check("page has secondary text", sub > 3000, f"{sub} px")
 
     # --- content must not overlap the nav rail ------------------------------

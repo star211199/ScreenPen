@@ -62,8 +62,24 @@ body = cfg[cfg.index("class Settings"):]
 fields = set(re.findall(r"public\s+[\w<>\[\]\.]+\s+(\w+)\s*=", body))
 print(f"program keys:    {len(fields)}")
 
-missing_in_doc = sorted(fields - set(documented))
-extra_in_doc = sorted(set(documented) - fields)
+# A setting whose persisted key deliberately differs from its field name.
+#
+# ScrollFollowClickThrough is stored under ...V2 because the original key was
+# written to every settings file (default true) while no code ever read it, so
+# honouring that value now would silently make the annotation overlay
+# un-drawable during scroll-follow mode. Reading a fresh key lets those installs
+# fall back to the safe default. The mismatch is intentional, not drift, so it is
+# declared here rather than flagged as a documentation error.
+JSON_KEY_OVERRIDES = {"ScrollFollowClickThrough": "ScrollFollowClickThroughV2"}
+
+documented_keys = set(documented)
+for field, key in JSON_KEY_OVERRIDES.items():
+    if key in documented_keys:
+        documented_keys.discard(key)
+        documented_keys.add(field)
+
+missing_in_doc = sorted(fields - documented_keys)
+extra_in_doc = sorted(documented_keys - fields)
 
 print("\n=== schema comparison ===")
 check("README documents every program setting", not missing_in_doc,
@@ -74,6 +90,17 @@ check("README documents no non-existent setting", not extra_in_doc,
 # ---- round-trip through the real app --------------------------------------
 print("\n=== round-trip: hand the documented JSON to the app ===")
 SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+
+# The app's settings file is the user's live configuration, and this verifier
+# has to overwrite it to feed the app the documented schema. Keep a copy and put
+# it back at the end: running a check must not silently reset someone's
+# preferences, which is exactly the kind of side effect that makes a test
+# untrustworthy.
+SETTINGS_BACKUP = None
+if SETTINGS.exists():
+    SETTINGS_BACKUP = Path(str(SETTINGS) + ".verify_readme_backup")
+    SETTINGS_BACKUP.write_bytes(SETTINGS.read_bytes())
+
 io.open(SETTINGS, "w", encoding="utf-8").write(json.dumps(documented, ensure_ascii=False, indent=2))
 
 for stale in ("ScreenPen.error.log",):
@@ -85,6 +112,20 @@ proc = subprocess.Popen([str(EXE), "--tray"], cwd=str(EXE.parent))
 time.sleep(4.0)
 alive = proc.poll() is None
 check("app starts with the documented config", alive)
+
+if not alive:
+    # ScreenPen is single-instance: a second launch broadcasts to the first one
+    # and exits immediately. A leftover process therefore looks exactly like
+    # "the app will not start with the documented config", which sends you
+    # hunting for a config bug that is not there. Say what actually happened.
+    others = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq ScreenPen.exe", "/NH"],
+        capture_output=True, text=True).stdout
+    if "ScreenPen.exe" in others:
+        print("  NOTE: another ScreenPen.exe is already running. It is "
+              "single-instance, so this launch broadcast to it and exited. "
+              "Kill it and re-run before believing this failure.")
+        print("        " + " ".join(others.split())[:200])
 
 proc.terminate()
 try:
@@ -182,4 +223,12 @@ total = 7
 print(f"=== {total - len(fails)}/{total} README schema checks passed ===")
 for f in fails:
     print(f"   FAILED: {f}")
+
+# Put the user's own settings back before reporting. Done last so a failure
+# above still cannot leave their configuration replaced by the README sample.
+if SETTINGS_BACKUP is not None:
+    SETTINGS.write_bytes(SETTINGS_BACKUP.read_bytes())
+    SETTINGS_BACKUP.unlink()
+    print("restored the previous settings file")
+
 sys.exit(1 if fails else 0)

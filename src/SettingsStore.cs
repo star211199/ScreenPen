@@ -84,7 +84,15 @@ namespace ScreenPen
 
                 s.ScrollFollowEnabled = Json.Bool(m, "ScrollFollowEnabled", s.ScrollFollowEnabled);
                 s.WheelScrollsDocument = Json.Bool(m, "WheelScrollsDocument", s.WheelScrollsDocument);
-                s.ScrollFollowClickThrough = Json.Bool(m, "ScrollFollowClickThrough", s.ScrollFollowClickThrough);
+
+                // Read under a new key on purpose. The old "ScrollFollowClickThrough"
+                // switch was stored (and shipped as true) while no code ever read
+                // it, so every existing install carries a true that was never
+                // observable. Honouring it now would silently make the overlay
+                // un-drawable the first time the user pressed F. Starting from the
+                // new key means those installs get the safe default instead; the
+                // stale key is simply ignored and drops out on the next save.
+                s.ScrollFollowClickThrough = Json.Bool(m, "ScrollFollowClickThroughV2", s.ScrollFollowClickThrough);
 
                 s.HighlighterAlpha = Json.Int(m, "HighlighterAlpha", s.HighlighterAlpha);
                 s.ArrowStyleIndex = Json.Int(m, "ArrowStyleIndex", s.ArrowStyleIndex);
@@ -229,7 +237,7 @@ namespace ScreenPen
 
                 B("ScrollFollowEnabled", s.ScrollFollowEnabled);
                 B("WheelScrollsDocument", s.WheelScrollsDocument);
-                B("ScrollFollowClickThrough", s.ScrollFollowClickThrough);
+                B("ScrollFollowClickThroughV2", s.ScrollFollowClickThrough);
 
                 sb.AppendLine(string.Join("," + Environment.NewLine, lines.ToArray()));
                 sb.AppendLine("}");

@@ -8,7 +8,7 @@ using ScreenPen;
 
 // Verifies the 贴图 (pin-to-desktop) feature end to end:
 //
-//   * the region selector offers a 4th 贴图 button, its hit-test returns
+//   * the region selector offers a 贴图 button, its hit-test returns
 //     PinToDesktop, and a bare P does the same;
 //   * the old 3-argument constructor still behaves exactly as before;
 //   * PinForm's geometry maths is recompute-from-base, so repeated zooming
@@ -114,14 +114,27 @@ static class PinProbe
         Check(bp.Width > 0 && bp.Height > 0, "the 贴图 button has a real size", bp.ToString());
 
         Rectangle client = new Rectangle(0, 0, f.ClientSize.Width, f.ClientSize.Height);
-        Check(client.Contains(bs) && client.Contains(bc) &&
-              client.Contains(bp) && client.Contains(bx),
-              "all four toolbar buttons fit inside the window", "");
 
-        bool overlap =
-            bp.IntersectsWith(bs) || bp.IntersectsWith(bc) || bp.IntersectsWith(bx) ||
-            bs.IntersectsWith(bc) || bs.IntersectsWith(bx) || bc.IntersectsWith(bx);
-        Check(!overlap, "the four buttons never overlap each other", "");
+        // Every button, not just the four that used to exist. The toolbar is
+        // built from a count rather than four named rectangles, so the check has
+        // to walk the same source of truth or a newly added button could sit
+        // outside the window and nothing would notice.
+        int btnCount = f.ToolbarButtonCountForTest;
+        bool allInside = true, anyOverlap = false;
+        for (int i = 0; i < btnCount; i++)
+        {
+            Rectangle ri = f.ToolbarButtonBoundsForTest(i);
+            if (ri.Width <= 0 || ri.Height <= 0 || !client.Contains(ri)) allInside = false;
+            for (int j = i + 1; j < btnCount; j++)
+            {
+                if (ri.IntersectsWith(f.ToolbarButtonBoundsForTest(j))) anyOverlap = true;
+            }
+        }
+
+        Check(btnCount == 6, "the toolbar offers 保存/复制/贴图/识别/GIF/取消", btnCount.ToString());
+        Check(allInside, "every toolbar button has a real size and fits inside the window",
+              btnCount + " button(s)");
+        Check(!anyOverlap, "no two toolbar buttons overlap", "");
 
         Rectangle toolbar = f.ToolbarBoundsForTest;
         Check(client.Contains(toolbar),

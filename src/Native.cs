@@ -137,7 +137,9 @@ namespace ScreenPen
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOZORDER = 0x0004;
         public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint SWP_FRAMECHANGED = 0x0020;
         public const uint SWP_SHOWWINDOW = 0x0040;
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -338,19 +340,42 @@ namespace ScreenPen
         }
 
         /// <summary>
-        /// Makes a window ignore mouse input so clicks pass through to whatever
-        /// is underneath. Used by scroll-follow mode so the user can scroll and
-        /// click the real document while the annotation layer stays on top.
+        /// Makes a window ignore mouse input so clicks and wheel notches pass
+        /// through to whatever is underneath.
+        ///
+        /// Used two ways by the annotation overlay: for the moment a wheel is
+        /// forwarded to the document, and for the whole of scroll-follow mode
+        /// when the user has asked for click-through. WS_EX_TRANSPARENT is what
+        /// makes hit-testing skip the window; WS_EX_NOACTIVATE additionally keeps
+        /// the pass-through from stealing focus back.
+        ///
+        /// WS_EX_LAYERED is deliberately NOT touched. The first version of this
+        /// helper ORed it in on enable and never cleared it, so every call left
+        /// the window layered for good - a permanent, invisible rendering change
+        /// that outlived the feature. It is also not needed here: hit-testing
+        /// transparency comes from WS_EX_TRANSPARENT alone.
         /// </summary>
         public static void SetClickThrough(IntPtr hWnd, bool enable)
         {
             try
             {
+                if (hWnd == IntPtr.Zero || !IsWindow(hWnd)) return;
+
                 IntPtr ex = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
                 long v = ex.ToInt64();
-                if (enable) v |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE;
-                else v &= ~(long)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
-                SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(v));
+                long next = enable
+                    ? v | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
+                    : v & ~(long)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+                if (next == v) return;
+
+                SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(next));
+
+                // An ex-style change is only guaranteed to be picked up once the
+                // frame has been recomputed. Without this the flag can appear set
+                // to GetWindowLongPtr while hit-testing still uses the old value.
+                SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                             SWP_NOACTIVATE | SWP_FRAMECHANGED);
             }
             catch { }
         }
@@ -404,6 +429,31 @@ namespace ScreenPen
             catch { return false; }
         }
 
+        const byte VK_ESCAPE = 0x1B;
+        const uint KEYEVENTF_KEYUP = 0x0002;
+
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
+
+        /// <summary>
+        /// Injects a real Esc key-down/up pair.
+        ///
+        /// keybd_event is the deprecated twin of SendInput, but unlike SendInput
+        /// it needs no union-shaped INPUT struct, and for a single virtual key
+        /// the difference is immaterial. Used by the probe that proves the
+        /// recording hook really sees a system-wide key press rather than only
+        /// its own test seam.
+        /// </summary>
+        public static void SendEscape()
+        {
+            try
+            {
+                keybd_event(VK_ESCAPE, 0, 0, IntPtr.Zero);
+                keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+            }
+            catch { }
+        }
+
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT p);
 
@@ -427,10 +477,20 @@ namespace ScreenPen
             catch { return 0; }
         }
 
+        /// <summary>This process's id, resolved once.</summary>
+        static readonly uint OwnProcessId =
+            (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+
         /// <summary>
         /// True when the window under the given screen point scrolls
         /// independently of the desktop, i.e. it is a real document/web page
-        /// rather than the desktop or a Chromium/Electron host surface.
+        /// rather than the desktop, one of our own windows, or a shell surface.
+        ///
+        /// The caller is expected to have made the annotation overlay
+        /// click-through first. WindowFromPoint returns the topmost window at
+        /// the point, and the overlay is a full-screen topmost form, so without
+        /// that step this would always find the overlay itself and answer "yes,
+        /// scrollable" about a window that is not the document.
         /// </summary>
         public static bool IsScrollableWindowUnder(Point screenPoint)
         {
@@ -448,11 +508,26 @@ namespace ScreenPen
                 if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" ||
                     c == "SysListView32" || c == "SHELLDLL_DefView") return false;
 
+                // Never claim our own window is the document. If the overlay
+                // failed to go click-through, forwarding a wheel here would send
+                // it straight back to us and the page would never move - the
+                // exact loop that made this look broken. Pins, the settings
+                // window and the tray all belong to this process too.
+                uint pid;
+                GetWindowThreadProcessId(h, out pid);
+                if (pid == OwnProcessId) return false;
+
                 IntPtr root = GetAncestor(h, GA_ROOT);
-                System.Text.StringBuilder rcls = new System.Text.StringBuilder(256);
-                if (root != IntPtr.Zero) GetClassName(root, rcls, 256);
-                string rc = rcls.ToString();
-                if (rc == "Progman" || rc == "WorkerW") return false;
+                if (root != IntPtr.Zero && root != h)
+                {
+                    GetWindowThreadProcessId(root, out pid);
+                    if (pid == OwnProcessId) return false;
+
+                    System.Text.StringBuilder rcls = new System.Text.StringBuilder(256);
+                    GetClassName(root, rcls, 256);
+                    string rc = rcls.ToString();
+                    if (rc == "Progman" || rc == "WorkerW") return false;
+                }
 
                 return true;
             }

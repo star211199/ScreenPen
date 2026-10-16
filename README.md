@@ -171,12 +171,18 @@
    - **在选区内双击** → 等同按 `Enter`，直接执行默认动作（保存时不再需要点按钮）；
    - `Ctrl + C` 或点 **复制 (Ctrl+C)** → 直接进剪贴板；
    - `P` 或点 **贴图 (P)** → 把选区**钉在桌面上**（见下面"贴图"一节）；
+   - `O` 或点 **识别文字 (O)** → 识别选区里的文字（见第六节）；
+   - `G` 或点 **录制GIF (G)** → 把选区录成动图（见第七节）；
    - `Esc` 或点 **取消 (Esc)** → 放弃。
-4. 框选后还可以用**方向键**微调选区（按住 `Shift` 每步 10px），`Ctrl + A` 全选。
+4. 框选后还可以**方向键**微调选区（按住 `Shift` 每步 10px），`Ctrl + A` 全选。
+5. **框选完成后仍可继续调整**：拖动选区**内部**可以整体移动，拖动四边/四角的
+   **8 个方块把手**可以改变大小；鼠标移到哪块就显示对应的缩放光标。移动和缩放都会
+   自动限制在屏幕内，不会把选区拖到看不见的地方。
 
-> 工具条上的四个按钮是 **保存 / 复制 / 贴图 / 取消**。其中被高亮（橙色）的那个
-> 就是 `Enter` 会执行的动作——用 `Ctrl+Alt+S` 进来时是**保存**，用 `Ctrl+Alt+C` 进来时是**复制**，
-> 从托盘"区域截图并钉在桌面"进来时是**贴图**。宽度不够时按钮会自动用短标签或整体收窄。
+> 工具条上的按钮是 **保存 / 复制 / 贴图 / 识别文字 / 录制GIF / 取消**。其中被高亮（橙色）
+> 的那个就是 `Enter` 会执行的动作——用 `Ctrl+Alt+S` 进来时是**保存**，用 `Ctrl+Alt+C`
+> 进来时是**复制**，从托盘"区域截图并钉在桌面"进来时是**贴图**，用 `Ctrl+Alt+O` 进来时是
+> **识别文字**，用 `Ctrl+Alt+G` 进来时是**录制GIF**。宽度不够时按钮会自动用短标签或整体收窄。
 
 ### 区域截图并复制 — `Ctrl + Alt + C`
 
@@ -324,7 +330,23 @@
 - 相关的三个设置（常规页）：
   - **允许使用跟随滚动模式**（`ScrollFollowEnabled`）
   - **滚轮滚动网页内容**（`WheelScrollsDocument`，关掉则滚轮改为调笔宽）
-  - **让鼠标点击穿透到下方窗口**（`ScrollFollowClickThrough`）
+  - **跟随期间让鼠标点击穿透到下方窗口**（`ScrollFollowClickThrough`，默认**关**）
+
+### 滚轮是怎么"穿"到下层窗口的
+
+这一步不是直接 `SendInput` 就完事，值得说明，因为它原来就是坏的：
+
+程序自己的标注层是一张**全屏置顶**的窗口。往系统里注入一个滚轮事件后，
+命中测试第一个撞到的还是**它自己**——于是 `OnMouseWheel` 又转发一次，
+如此循环，下面的网页**一次都没滚**。表现就是"滚轮没反应"。
+
+所以转发前后会临时给标注层加上 `WS_EX_TRANSPARENT`：命中测试直接跳过它，
+滚轮事件这才落到真正的文档上；约 180ms 后（事件已经被消费）自动撤销。
+连续滚动时这个窗口会被不断续期，所以整段滚动期间都保持穿透。
+
+同一套机制也支撑 `ScrollFollowClickThrough`：勾上以后，**跟随模式期间**标注层
+一直保持穿透，可以顺手点链接；代价是那时**画不了新标注**（穿透是整个窗口的
+属性，不是分区域的），所以默认关闭。
 
 ---
 
@@ -335,11 +357,14 @@
 **用法**（任选其一）：
 
 1. 按 `Ctrl + Alt + O`，框选要识别的区域；
-2. 或在区域选择界面按 `O`；
+2. 或在区域选择界面按 `O`，或点工具条上的 **识别文字 (O)**；
 3. 或右键托盘图标 → **识别选区文字…**。
 
 识别后会弹出一个结果窗口，里面是**可以选中、可以再次复制**的文本
 （不是只能看一眼的气泡提示）。默认会**自动复制到剪贴板**。
+
+> 以前 OCR 只能靠快捷键触发，截图工具条上没有任何入口，所以基本没人发现它。
+> 现在工具条上有 **识别文字** 按钮，走的是和快捷键完全相同的动作。
 
 **关于识别引擎**：
 
@@ -367,18 +392,34 @@
 **用法**（任选其一）：
 
 1. 按 `Ctrl + Alt + G`，框选要录制的区域；
-2. 或在区域选择界面按 `G`；
+2. 或在区域选择界面按 `G`，或点工具条上的 **录制GIF (G)**；
 3. 或右键托盘图标 → **录制选区为 GIF…**。
 
 框选后会先**倒计时**（默认 3 秒，方便你把鼠标移开），然后开始录制。
 录制期间选区周围有一圈**红框**和一个**状态条**（显示秒数、帧数和"Esc 停止"）。
 
-- **按 `Esc`** 或再次触发录制快捷键即可**结束并保存**；
-- 达到"最长录制时间"（默认 30 秒）会自动结束；
-- 想放弃这次录制，直接删掉刚生成的 GIF 即可。
+**怎么停下来**（任选其一）：
+
+- **按 `Esc`** —— 录制期间程序会临时挂一个全局键盘钩子，所以焦点在别的窗口也管用；
+- **再按一次 `Ctrl + Alt + G`** —— 第二次触发表示"停止"而不是"重新开始"；
+- 右键托盘图标 → **停止 GIF 录制**（这一项只在录制中出现，平时是灰的）；
+- 达到"最长录制时间"（默认 30 秒）会自动结束。
+
+结束后会弹出一个**结果窗口**，上面写着：
+
+- 文件名，例如 `已保存：ScreenPen_20261016_143012.gif`；
+- `42 帧   7 秒   2.0 MB` 这样的摘要；
+- **完整保存路径**，放在一个可以选中、可以 `Ctrl+C` 的输入框里；
+- 四个按钮：**复制路径** / **在文件夹中显示**（在资源管理器里高亮这个文件）/
+  **打开动图** / **关闭**。
+
+> 以前这里只弹一个 2 秒就消失的气泡，既不能选中也没法操作，所以录完之后
+> 根本不知道文件去哪了——结果窗口就是为这件事加的。
 
 **保存位置**：截图文件夹（和截图一样；未设置时是 `图片\ScreenPen`），
 文件名形如 `ScreenPen_20261016_143012.gif`。
+
+想放弃这次录制，直接删掉刚生成的 GIF 即可。
 
 **几个实用细节**：
 
@@ -582,7 +623,11 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
   // ---- 跟随滚动 ----
   "ScrollFollowEnabled":        true, // 允许 F 键开启跟随滚动
   "WheelScrollsDocument":       true, // 滚轮滚动网页（false=调笔宽）
-  "ScrollFollowClickThrough":   true, // 鼠标点击穿透到下方窗口
+  // 跟随模式期间整层点击穿透（默认 false；开启后跟随期间无法画新标注）。
+  // 键名带 V2 是有意的：旧键 "ScrollFollowClickThrough" 虽然一直在写盘、默认
+  // true，但从来没有被任何代码读过。直接沿用会把一个用户从未见过效果的 true
+  // 变成"一按 F 就画不了字"，所以换键名让老配置回到安全默认值。
+  "ScrollFollowClickThroughV2": false,
 
   // ---- 常规 ----
   "RunAtStartup":     false,
@@ -696,12 +741,14 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | `src\SettingsStore.cs` | 配置加载/原子保存、`HotKey` 解析与格式化 |
 | `src\Native.cs` | P/Invoke：热键注册、屏幕捕获、滚轮转发、DPI、窗口置顶、DWM 窗口边界 |
 | `src\OverlayForm.cs` | 全屏遮罩：绘制、平移缩放、边缘移动、跟随滚动、HUD、撤销/重做 |
-| `src\RegionSelectForm.cs` | 区域框选界面（冻结底图 + 四个按钮的工具条 + 键盘微调） |
+| `src\RegionSelectForm.cs` | 区域框选界面（冻结底图 + 六个按钮的工具条 + 选区移动/8 把手缩放 + 键盘微调） |
 | `src\PinForm.cs` | **桌面贴图窗口**：拖动、滚轮缩放、悬停关闭、`Ctrl+C` / `Ctrl+S` |
 | `src\Beautifier.cs` | **截图美化**：渐变背景 + 圆角 + 柔和阴影（纯函数，无状态） |
 | `src\ColorPickerForm.cs` | **屏幕取色器**：冻结底图 + 放大镜 + 色号读出 |
 | `src\Gif.cs` | **GIF 编码**：WPF 编码器 + 字节级回填每帧延时与循环块 |
 | `src\GifRecorder.cs` | **GIF 录制**：定时采样选区、倒计时、时长上限、录制红框 |
+| `src\GifResultForm.cs` | **GIF 结果窗口**：显示保存路径（可选中复制）+ 复制路径 / 在文件夹中显示 / 打开 |
+| `src\KeyboardHook.cs` | 录制期间临时挂的 `WH_KEYBOARD_LL` 钩子，让 `Esc` 能停止录制 |
 | `src\Ocr.cs` | **文字识别**：反射绑定 WinRT `Windows.Media.Ocr`，含小图放大与坐标换算 |
 | `src\OcrResultForm.cs` | **识别结果窗口**：可选中/可复制的文本 + 再次复制 |
 | `src\BrushCursor.cs` | 从 `assets\画笔.svg` 生成画笔光标 |
@@ -709,7 +756,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | `src\AppContext2.cs` | 控制器：托盘、热键分发、截图保存、贴图管理、模式切换 |
 | `src\Shell.cs` | 单实例、开机自启、图标加载 |
 
-共 **17 个 `.cs` 文件**（含 `Program.cs`）。
+共 **19 个 `.cs` 文件**（含 `Program.cs`）。
 
 > `Gif.cs` / `GifRecorder.cs` 需要引用 WPF 的 `PresentationCore` / `WindowsBase` /
 > `System.Xaml`，`build.ps1` 会自动从 .NET Framework 目录里取，**不需要 SDK**。
@@ -729,7 +776,8 @@ powershell -ExecutionPolicy Bypass -File build\run_probes.ps1
 | `gif_delta_probe` | 帧延时回填与 `NETSCAPE2.0` 循环块真的写进了 GIF 字节里 |
 | `gif_ocr_probe` | GIF 延时/循环/合并帧 + OCR 识别、放大、坐标换算、工作线程超时 |
 | `gif_recorder_probe` | 录制真的采样、写出的 GIF 可被独立解码、时长上限、取消、红框不入画 |
-| `ocr_gif_wiring_probe` | `RegionAction` 取值稳定、工具条仍是 4 个按钮、`O`/`G` 按键、78 键读写 |
+| `ocr_gif_wiring_probe` | `RegionAction` 取值稳定、工具条有全部 6 个按钮且点击落到正确动作、`O`/`G` 按键、78 键读写 |
+| `ux_fix_probe` | 四个反馈问题的回归：工具条入口、选区移动/8 把手缩放与边界钳制、GIF 结果窗口路径可见、滚轮穿透与穿透撤销、`Esc` 停止录制的真实按键到达 |
 
 **可行性探针**（4 个，38 条断言）——回答"某个候选功能在本机到底能不能做"，
 它们**不编译程序源码**，是《ScreenPen功能增强调研报告.md》里每条结论的可复现证据：
@@ -757,6 +805,16 @@ D:\Miniconda3\envs\py312\python.exe build\verify_brush.py   # 画笔光标
 D:\Miniconda3\envs\py312\python.exe build\verify_resize.py  # 设置窗口可调整大小
 D:\Miniconda3\envs\py312\python.exe build\verify_upgrade.py # 各工具绘制结果 + 区域截图 + 剪贴板
 D:\Miniconda3\envs\py312\python.exe build\verify_readme.py  # 本文档与真实配置一致性
+```
+
+> ⚠️ **`verify_ui.py` 不会自己截图**，它读 `capture_ui.py` 上一步生成的 PNG。
+> 改了界面却只跑 `verify_ui.py`，它会拿旧图给你一个毫无意义的满分。
+> 顺序必须是 **先 `capture_ui.py`，再 `verify_ui.py`**。
+
+看界面而不是断言界面（产物在 `build\shots\render\`，用来人眼核对）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\run_render.ps1 render_pin
 ```
 
 > 测试脚本会声明 `SetProcessDpiAwarenessContext(-4)`。
