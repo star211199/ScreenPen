@@ -44,6 +44,14 @@ namespace ScreenPen
         HotkeyBox _hkText, _hkMosaic, _hkSpotlight, _hkClear, _hkFollow;
         HotkeyBox _hkHighlighter, _hkStep, _hkRedo;
         HotkeyBox _hkWindowShot, _hkPicker;
+        HotkeyBox _hkOcr, _hkGif;
+        // OCR
+        CheckBox _chkOcrCopy, _chkOcrLines;
+        NumericUpDown _numOcrUpscale;
+        ComboBox _cmbOcrLang;
+        // GIF
+        NumericUpDown _numGifFps, _numGifMax, _numGifCountdown;
+        CheckBox _chkGifBorder, _chkGifLoop, _chkGifSkip;
 
         /// <summary>
         /// Every configurable key in dialog order. It is built while the pages
@@ -81,6 +89,45 @@ namespace ScreenPen
         }
 
         Panel _paletteHost;
+
+        // ---------------------------------------------------------------------
+        //  Test seams
+        //
+        //  The dialog is driven by probes that must not open modal windows or
+        //  touch the user's saved settings. These expose just enough to check
+        //  that the OCR/GIF controls are bound in both directions.
+        // ---------------------------------------------------------------------
+
+        /// <summary>Builds the dialog for a probe without showing it.</summary>
+        internal static SettingsForm CreateForTest(Settings cfg)
+        {
+            return new SettingsForm(cfg, delegate { return true; });
+        }
+
+        internal string OcrHotkeyForTest { get { return _hkOcr.Text; } }
+        internal string GifHotkeyForTest { get { return _hkGif.Text; } }
+        internal int GifFpsForTest { get { return (int)_numGifFps.Value; } }
+        internal int OcrUpscaleForTest { get { return (int)_numOcrUpscale.Value; } }
+        internal string OcrLanguageForTest { get { return SelectedOcrLanguage(); } }
+        internal int OcrLanguageCountForTest { get { return _cmbOcrLang.Items.Count; } }
+        internal bool OcrCopyForTest { get { return _chkOcrCopy.Checked; } }
+
+        internal void SetGifFpsForTest(int v) { _numGifFps.Value = Clamp(v, _numGifFps); }
+        internal void SetOcrUpscaleForTest(int v) { _numOcrUpscale.Value = Clamp(v, _numOcrUpscale); }
+        internal void SetGifCountdownForTest(int v) { _numGifCountdown.Value = Clamp(v, _numGifCountdown); }
+        internal void SetOcrCopyForTest(bool v) { _chkOcrCopy.Checked = v; }
+
+        /// <summary>
+        /// Runs the dialog's real save path and returns the resulting settings.
+        ///
+        /// OnSave both validates and persists, so a probe must restore the
+        /// settings file afterwards; the wiring probe does exactly that.
+        /// </summary>
+        internal Settings RunSaveForTest()
+        {
+            OnSave();
+            return _draft;
+        }
 
         // Footer chrome, kept so the buttons can be re-laid-out once the form
         // has its real width.
@@ -1203,6 +1250,8 @@ namespace ScreenPen
             _hkCopyShot = AddHotkeyRow(hot, "区域截图并复制", "区域截图并复制", ref y, gap);
             _hkWindowShot = AddHotkeyRow(hot, "窗口截图（整个前台窗口）", "窗口截图", ref y, gap);
             _hkPicker = AddHotkeyRow(hot, "屏幕取色器", "取色器", ref y, gap);
+            _hkOcr = AddHotkeyRow(hot, "识别选区文字（OCR）", "文字识别", ref y, gap);
+            _hkGif = AddHotkeyRow(hot, "录制选区为 GIF", "录制 GIF", ref y, gap);
             _hkZoomIn = AddHotkeyRow(hot, "放大画面", "放大", ref y, gap);
             _hkZoomOut = AddHotkeyRow(hot, "缩小画面", "缩小", ref y, gap);
 
@@ -1874,6 +1923,8 @@ namespace ScreenPen
 
             BuildBeautifyCard();
             BuildPickerCard();
+            BuildOcrCard();
+            BuildGifCard();
             FinishPage();
         }
 
@@ -1991,6 +2042,184 @@ namespace ScreenPen
             _cardContentTop = AddHint(p,
                 "放大镜里每个方块就是屏幕上的一个真实像素，中间十字对准的那个才会被取走。",
                 16, y + 34, CardWidth - 48);
+        }
+
+        /// <summary>
+        /// OCR settings. Recognition uses the OCR engine built into Windows, so
+        /// there is nothing to install; the available languages depend on what the
+        /// user has added under 设置 → 时间和语言 → 语言.
+        /// </summary>
+        void BuildOcrCard()
+        {
+            Panel p = Card2("文字识别（OCR）",
+                "在区域选择界面按 O，或按 Ctrl+Alt+O，即可识别选区里的文字。" +
+                "识别由 Windows 自带的 OCR 引擎完成，不联网、不上传任何内容。", 120);
+
+            int y = _cardContentTop;
+
+            string detail;
+            string[] langs = Ocr.AvailableLanguages();
+            bool avail = Ocr.IsAvailable(out detail);
+
+            _chkOcrCopy = new CheckBox
+            {
+                Text = "识别后自动复制到剪贴板",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            p.Controls.Add(_chkOcrCopy);
+            y += 34;
+
+            _chkOcrLines = new CheckBox
+            {
+                Text = "保留原来的换行",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            p.Controls.Add(_chkOcrLines);
+            y += 34;
+
+            p.Controls.Add(RowLabel("小图放大倍数", 16, y + 4));
+            _numOcrUpscale = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 0, Maximum = 8, Increment = 1,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numOcrUpscale);
+            y += 40;
+
+            p.Controls.Add(RowLabel("识别语言", 16, y + 4));
+            _cmbOcrLang = new ComboBox
+            {
+                Bounds = new Rectangle(220, y, 260, 28),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = CardAlt, ForeColor = TextMain, FlatStyle = FlatStyle.Flat
+            };
+            _cmbOcrLang.Items.Add("跟随系统");
+            foreach (string lg in langs) _cmbOcrLang.Items.Add(lg);
+            p.Controls.Add(_cmbOcrLang);
+
+            string hint;
+            if (!avail)
+                hint = "当前系统没有可用的识别语言，请在 Windows 设置里添加语言后重试。" + detail;
+            else if (langs.Length == 0)
+                hint = "没有检测到已安装的识别语言，请在 Windows 设置 → 时间和语言 → 语言 中添加。";
+            else
+                hint = "已安装的识别语言：" + string.Join("、", langs) +
+                       "。选「跟随系统」时会用 Windows 的默认语言。";
+            _cardContentTop = AddHint(p, hint, 16, y + 34, CardWidth - 48);
+        }
+
+        /// <summary>GIF recording settings.</summary>
+        void BuildGifCard()
+        {
+            Panel p = Card2("录制 GIF 动图",
+                "在区域选择界面按 G，或按 Ctrl+Alt+G，即可把选区录制成 GIF。" +
+                "录制时选区周围会出现红框和状态条，按 Esc 结束；红框不会被录进画面。", 120);
+
+            int y = _cardContentTop;
+
+            p.Controls.Add(RowLabel("帧率 (帧/秒)", 16, y + 4));
+            _numGifFps = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 2, Maximum = 25, Increment = 1,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numGifFps);
+            y += 40;
+
+            p.Controls.Add(RowLabel("最长录制 (秒)", 16, y + 4));
+            _numGifMax = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 1, Maximum = 300, Increment = 5,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numGifMax);
+            y += 40;
+
+            p.Controls.Add(RowLabel("开始前倒计时 (秒)", 16, y + 4));
+            _numGifCountdown = new NumericUpDown
+            {
+                Bounds = new Rectangle(220, y, 80, 28),
+                Minimum = 0, Maximum = 10, Increment = 1,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_numGifCountdown);
+            y += 40;
+
+            _chkGifBorder = new CheckBox
+            {
+                Text = "录制时显示红框和状态条",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            p.Controls.Add(_chkGifBorder);
+            y += 34;
+
+            _chkGifLoop = new CheckBox
+            {
+                Text = "循环播放",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            p.Controls.Add(_chkGifLoop);
+            y += 34;
+
+            _chkGifSkip = new CheckBox
+            {
+                Text = "画面没变化时合并帧（文件更小）",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            p.Controls.Add(_chkGifSkip);
+
+            _cardContentTop = AddHint(p,
+                "帧率越高越流畅，文件也越大；10 帧/秒适合大多数演示。" +
+                "「合并帧」会把连续相同的画面合成一帧，静态内容占用的空间会小很多。",
+                16, y + 34, CardWidth - 48);
+        }
+
+        /// <summary>
+        /// Selects the saved OCR language, falling back to 跟随系统 when the
+        /// language is no longer installed (the user may have removed it since).
+        /// </summary>
+        void SelectOcrLanguage(string tag)
+        {
+            int idx = 0;   // "跟随系统"
+            if (!string.IsNullOrEmpty(tag))
+            {
+                for (int i = 0; i < _cmbOcrLang.Items.Count; i++)
+                    if (string.Equals(Convert.ToString(_cmbOcrLang.Items[i]), tag,
+                                      StringComparison.OrdinalIgnoreCase))
+                    { idx = i; break; }
+            }
+            if (idx < _cmbOcrLang.Items.Count) _cmbOcrLang.SelectedIndex = idx;
+        }
+
+        /// <summary>The chosen language, or "" for 跟随系统.</summary>
+        string SelectedOcrLanguage()
+        {
+            int i = _cmbOcrLang.SelectedIndex;
+            if (i <= 0) return "";
+            return Convert.ToString(_cmbOcrLang.Items[i]);
         }
 
         /// <summary>
@@ -2301,6 +2530,8 @@ namespace ScreenPen
             _hkCopyShot.Text = _draft.CopyShotKey;
             _hkWindowShot.Text = _draft.WindowShotKey;
             _hkPicker.Text = _draft.ColorPickerKey;
+            _hkOcr.Text = _draft.OcrKey;
+            _hkGif.Text = _draft.GifKey;
             _hkZoomIn.Text = _draft.ZoomInKey;
             _hkZoomOut.Text = _draft.ZoomOutKey;
 
@@ -2356,6 +2587,18 @@ namespace ScreenPen
 
             _numPickerLoupe.Value = Clamp(_draft.PickerLoupeSize, _numPickerLoupe);
             _numPickerZoom.Value = Clamp(_draft.PickerZoom, _numPickerZoom);
+
+            _chkOcrCopy.Checked = _draft.OcrCopyToClipboard;
+            _chkOcrLines.Checked = _draft.OcrKeepLineBreaks;
+            _numOcrUpscale.Value = Clamp(_draft.OcrUpscaleSmall, _numOcrUpscale);
+            SelectOcrLanguage(_draft.OcrLanguage);
+
+            _numGifFps.Value = Clamp(_draft.GifFps, _numGifFps);
+            _numGifMax.Value = Clamp(_draft.GifMaxSeconds, _numGifMax);
+            _numGifCountdown.Value = Clamp(_draft.GifCountdownSeconds, _numGifCountdown);
+            _chkGifBorder.Checked = _draft.GifShowBorder;
+            _chkGifLoop.Checked = _draft.GifLoop;
+            _chkGifSkip.Checked = _draft.GifSkipIdenticalFrames;
 
             _chkMagnifier.Checked = _draft.MagnifierDuringLiveZoom;
             _numStep.Value = Clamp(_draft.ZoomStepPercent, _numStep);
@@ -2557,6 +2800,8 @@ namespace ScreenPen
             _draft.CopyShotKey = _hkCopyShot.Text.Trim();
             _draft.WindowShotKey = _hkWindowShot.Text.Trim();
             _draft.ColorPickerKey = _hkPicker.Text.Trim();
+            _draft.OcrKey = _hkOcr.Text.Trim();
+            _draft.GifKey = _hkGif.Text.Trim();
             _draft.ZoomInKey = _hkZoomIn.Text.Trim();
             _draft.ZoomOutKey = _hkZoomOut.Text.Trim();
 
@@ -2611,6 +2856,18 @@ namespace ScreenPen
 
             _draft.PickerLoupeSize = (int)_numPickerLoupe.Value;
             _draft.PickerZoom = (int)_numPickerZoom.Value;
+
+            _draft.OcrCopyToClipboard = _chkOcrCopy.Checked;
+            _draft.OcrKeepLineBreaks = _chkOcrLines.Checked;
+            _draft.OcrUpscaleSmall = (int)_numOcrUpscale.Value;
+            _draft.OcrLanguage = SelectedOcrLanguage();
+
+            _draft.GifFps = (int)_numGifFps.Value;
+            _draft.GifMaxSeconds = (int)_numGifMax.Value;
+            _draft.GifCountdownSeconds = (int)_numGifCountdown.Value;
+            _draft.GifShowBorder = _chkGifBorder.Checked;
+            _draft.GifLoop = _chkGifLoop.Checked;
+            _draft.GifSkipIdenticalFrames = _chkGifSkip.Checked;
 
             _draft.RegionDimOutside = _chkRegionDim.Checked;
             _draft.RegionShowSize = _chkRegionSize.Checked;

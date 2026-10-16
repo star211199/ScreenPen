@@ -1,11 +1,11 @@
 # ScreenPen 屏幕画笔 · 使用说明
 
 一个绿色免安装的屏幕标注工具：**实时画笔 + 区域/窗口截图 + 桌面贴图 + 实时缩放 + 屏幕取色 +
-标注跟随滚动 + 截图美化**。
+标注跟随滚动 + 截图美化 + 文字识别(OCR) + 录制 GIF 动图**。
 双击即用，无外部依赖，不写注册表（开机自启除外）。
 
-- 程序文件：`dist\ScreenPen.exe`（265 KB，单文件）
-- 配置文件：`dist\ScreenPen.settings.json`（与 EXE 同目录，绿色便携，66 个键）
+- 程序文件：`dist\ScreenPen.exe`（294 KB，单文件）
+- 配置文件：`dist\ScreenPen.settings.json`（与 EXE 同目录，绿色便携，78 个键）
 
 **标注工具**：画笔、直线、矩形、椭圆、箭头（直/弧/折三种样式）、文字、马赛克、聚光灯、
 荧光笔、序号标记 —— 全部支持多级撤销 / 重做。
@@ -39,6 +39,8 @@
 | `Ctrl + Alt + C` | **区域截图并复制**到剪贴板（框选） |
 | `Ctrl + Alt + W` | **窗口截图**（直接截取鼠标所在的那个窗口，不用框选） |
 | `Ctrl + Alt + P` | **屏幕取色器**（放大镜取色，取完自动复制色号） |
+| `Ctrl + Alt + O` | **识别选区文字**（OCR，框选后识别并复制） |
+| `Ctrl + Alt + G` | **录制选区为 GIF**（框选后开始录制动图） |
 | `Ctrl + ↑` / `Ctrl + ↓` | 放大 / 缩小画面 |
 
 **全部快捷键都可以在设置里改**（见第六节）。
@@ -326,7 +328,73 @@
 
 ---
 
-## 六、设置页面
+## 六、文字识别（OCR）
+
+把屏幕上的文字（网页、报错框、图片里的字）直接变成**可复制的文本**。
+
+**用法**（任选其一）：
+
+1. 按 `Ctrl + Alt + O`，框选要识别的区域；
+2. 或在区域选择界面按 `O`；
+3. 或右键托盘图标 → **识别选区文字…**。
+
+识别后会弹出一个结果窗口，里面是**可以选中、可以再次复制**的文本
+（不是只能看一眼的气泡提示）。默认会**自动复制到剪贴板**。
+
+**关于识别引擎**：
+
+- 用的是 **Windows 系统自带的 OCR 引擎**（和"截图工具"里的文字提取同源），
+  所以**不需要安装任何东西**，也**不联网**——图片和识别结果都不会离开你的电脑。
+- 简体中文/英文的识别语言通常已随系统装好。若提示没有可用语言，
+  到 Windows **设置 → 时间和语言 → 语言** 里添加对应语言即可。
+- 设置页可以指定**识别语言**，默认"跟随系统"。
+
+**几个实用细节**：
+
+- **小图会自动放大**再识别（`OcrUpscaleSmall`，默认放大到短边约 100px），
+  所以屏幕上一行很小的字也能识别出来；识别框会**自动换算回原图坐标**。
+- 识别的是**你框选的那一块**，不是整屏，所以默认不会误认到旁边的内容。
+- 想保留原文的换行就打开 **保留原来的换行**；关掉则会把各行合成一段
+  （适合要把文字粘进搜索框或聊天窗口）。
+- 选得太小（短边不到约 40px）或全白时会提示"没有识别到文字"，换个区域再试即可。
+
+---
+
+## 七、录制 GIF 动图
+
+把屏幕上的一小块区域录成 **GIF**，用来演示操作步骤、做简短动图。
+
+**用法**（任选其一）：
+
+1. 按 `Ctrl + Alt + G`，框选要录制的区域；
+2. 或在区域选择界面按 `G`；
+3. 或右键托盘图标 → **录制选区为 GIF…**。
+
+框选后会先**倒计时**（默认 3 秒，方便你把鼠标移开），然后开始录制。
+录制期间选区周围有一圈**红框**和一个**状态条**（显示秒数、帧数和"Esc 停止"）。
+
+- **按 `Esc`** 或再次触发录制快捷键即可**结束并保存**；
+- 达到"最长录制时间"（默认 30 秒）会自动结束；
+- 想放弃这次录制，直接删掉刚生成的 GIF 即可。
+
+**保存位置**：截图文件夹（和截图一样；未设置时是 `图片\ScreenPen`），
+文件名形如 `ScreenPen_20261016_143012.gif`。
+
+**几个实用细节**：
+
+- **红框和状态条不会被录进画面**：程序用
+  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 把自己从捕获中排除掉。
+  如果系统不支持，红框就**不画**，也绝不会出现在 GIF 里。
+- **画面没变化时自动合并帧**（`GifSkipIdenticalFrames`）：静态部分不会占用多余空间，
+  文件明显更小。这也是纯本地、无依赖实现的。
+- **可选循环播放**（`GifLoop`，默认开）。
+- 帧率 `GifFps` 默认 **10 帧/秒**：兼顾流畅度和体积，做演示足够；
+  调到 25 会明显变大。
+- 录制过程使用**实时屏幕**（不是冻结画面），所以录到的是真实操作过程。
+
+---
+
+## 八、设置页面
 
 打开方式（任选其一）：
 
@@ -370,7 +438,7 @@
 
 ---
 
-## 七、画笔光标
+## 九、画笔光标
 
 画笔模式下，鼠标指针会变成 `assets\画笔.svg` 渲染出的**画笔图标**（白色描边 + 黑色投影，
 在深色和浅色背景上都看得清）。
@@ -382,7 +450,7 @@
 
 ---
 
-## 八、开机自动启动
+## 十、开机自动启动
 
 两种设置方式：
 
@@ -405,7 +473,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 九、配置文件（完整 66 键）
+## 十一、配置文件（完整 78 键）
 
 文件位置：**与 EXE 同目录** 的 `ScreenPen.settings.json`
 
@@ -418,6 +486,8 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
   "CopyShotKey":      "Ctrl+Alt+C",   // 区域截图并复制
   "WindowShotKey":    "Ctrl+Alt+W",   // 窗口截图（光标下的窗口）
   "ColorPickerKey":   "Ctrl+Alt+P",   // 屏幕取色器
+  "OcrKey":           "Ctrl+Alt+O",   // 识别选区文字（OCR）
+  "GifKey":           "Ctrl+Alt+G",   // 录制选区为 GIF
   "UndoKey":          "Ctrl+Z",       // 撤销
   "RedoKey":          "Ctrl+Y",       // 重做
   "SaveKey":          "Ctrl+S",       // 保存标注图（画笔模式下）
@@ -495,6 +565,20 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
   "PickerLoupeSize":   150,           // 放大镜边长 (px) 60~400
   "PickerZoom":        8,             // 放大倍数 2~32
 
+  // ---- 文字识别 (OCR) ----
+  "OcrCopyToClipboard":  true,        // 识别后自动复制到剪贴板
+  "OcrKeepLineBreaks":   true,        // 保留原来的换行
+  "OcrUpscaleSmall":     3,           // 小图放大倍数 0~8（0=不放大）
+  "OcrLanguage":         "",          // 识别语言；"" = 跟随系统
+
+  // ---- 录制 GIF ----
+  "GifFps":              10,          // 帧率 (帧/秒) 2~25
+  "GifMaxSeconds":       30,          // 最长录制秒数 1~300
+  "GifLoop":             true,        // 循环播放
+  "GifSkipIdenticalFrames": true,     // 连续相同画面合并成一帧（文件更小）
+  "GifShowBorder":       true,        // 录制时显示红框与状态条
+  "GifCountdownSeconds": 3,           // 开始前倒计时秒数 0~10
+
   // ---- 跟随滚动 ----
   "ScrollFollowEnabled":        true, // 允许 F 键开启跟随滚动
   "WheelScrollsDocument":       true, // 滚轮滚动网页（false=调笔宽）
@@ -519,7 +603,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十、多显示器与高 DPI
+## 十二、多显示器与高 DPI
 
 - 程序声明为 **Per-Monitor DPI Aware V2**，在 4K / 缩放 125%、150%、200% 的屏幕上
   坐标**不会错位**，设置界面也会按当前 DPI 等比放大。
@@ -528,7 +612,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十一、数据与隐私
+## 十三、数据与隐私
 
 - **纯本地运行**，不联网、不上传任何内容。
 - 只写两个位置：
@@ -539,7 +623,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十二、常见问题
+## 十四、常见问题
 
 **Q：按快捷键没反应？**
 1. 确认程序在运行（看托盘图标）。
@@ -593,7 +677,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十三、开发者：重新编译
+## 十五、开发者：重新编译
 
 ```powershell
 cd ScreenPen
@@ -616,20 +700,36 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | `src\PinForm.cs` | **桌面贴图窗口**：拖动、滚轮缩放、悬停关闭、`Ctrl+C` / `Ctrl+S` |
 | `src\Beautifier.cs` | **截图美化**：渐变背景 + 圆角 + 柔和阴影（纯函数，无状态） |
 | `src\ColorPickerForm.cs` | **屏幕取色器**：冻结底图 + 放大镜 + 色号读出 |
+| `src\Gif.cs` | **GIF 编码**：WPF 编码器 + 字节级回填每帧延时与循环块 |
+| `src\GifRecorder.cs` | **GIF 录制**：定时采样选区、倒计时、时长上限、录制红框 |
+| `src\Ocr.cs` | **文字识别**：反射绑定 WinRT `Windows.Media.Ocr`，含小图放大与坐标换算 |
+| `src\OcrResultForm.cs` | **识别结果窗口**：可选中/可复制的文本 + 再次复制 |
 | `src\BrushCursor.cs` | 从 `assets\画笔.svg` 生成画笔光标 |
 | `src\SettingsForm.cs` | 深色设置界面（6 个页面，支持高 DPI 缩放，**窗口可自由调整大小**） |
 | `src\AppContext2.cs` | 控制器：托盘、热键分发、截图保存、贴图管理、模式切换 |
 | `src\Shell.cs` | 单实例、开机自启、图标加载 |
 
-共 **13 个 `.cs` 文件**。
+共 **17 个 `.cs` 文件**（含 `Program.cs`）。
+
+> `Gif.cs` / `GifRecorder.cs` 需要引用 WPF 的 `PresentationCore` / `WindowsBase` /
+> `System.Xaml`，`build.ps1` 会自动从 .NET Framework 目录里取，**不需要 SDK**。
 
 ### 自动化测试
 
-**一条命令跑完全部 17 个进程内探针**（推荐）：
+**一条命令跑完全部 21 个进程内探针**（推荐）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\run_probes.ps1
 ```
+
+其中 4 个是本轮新增功能的专项探针：
+
+| 探针 | 验证的事 |
+| --- | --- |
+| `gif_delta_probe` | 帧延时回填与 `NETSCAPE2.0` 循环块真的写进了 GIF 字节里 |
+| `gif_ocr_probe` | GIF 延时/循环/合并帧 + OCR 识别、放大、坐标换算、工作线程超时 |
+| `gif_recorder_probe` | 录制真的采样、写出的 GIF 可被独立解码、时长上限、取消、红框不入画 |
+| `ocr_gif_wiring_probe` | `RegionAction` 取值稳定、工具条仍是 4 个按钮、`O`/`G` 按键、78 键读写 |
 
 **可行性探针**（4 个，38 条断言）——回答"某个候选功能在本机到底能不能做"，
 它们**不编译程序源码**，是《ScreenPen功能增强调研报告.md》里每条结论的可复现证据：

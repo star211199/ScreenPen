@@ -3,14 +3,14 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（**第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
-> + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复**，
-> 见 §1.6 与 §5.0）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，271,360 bytes（265.0 KB）
-> `sha256 F6B479FFB7AB9B68A9C391C8DA8B1B86104481F328F212619B51D45CF83B0000`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（17/17）
+> 最后更新：本轮（**文字识别 OCR + 录制 GIF 动图**，见 §1.7；
+> 上一轮为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
+> + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复，见 §1.6 与 §5.0）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，301,568 bytes（294.5 KB）
+> `sha256 9B27348C408BA5A62D7C490ED3954797A2B9300BC848CC00203A7A315C397B3D`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（21/21）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
-> `verify_readme.py` **7/7**（本轮核对 66 键）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
+> `verify_readme.py` **7/7**（本轮核对 **78 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
 > `verify_resize.py` **9/9**
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
@@ -31,16 +31,22 @@ cd ScreenPen
 - **C# 5 语法上限**（旧 csc）：禁止字符串插值 `$"..."`、表达式体成员 `=>`、`nameof`、`?.`、
   局部函数、自动属性初始化器。用 `delegate`、`string.Format`、传统属性。`var`/lambda/匿名类型/对象初始化器可用。
 - 重新编译前**必须先删除**目标 exe（文件被占用会报 CS0016）。
-- 源码**恰好 11 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
+- 源码**恰好 17 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
   `SettingsStore.cs`、`RegionSelectForm.cs`、`PinForm.cs`、`AppContext2.cs`、`BrushCursor.cs`、
-  `SettingsForm.cs`、`OverlayForm.cs`。**没有 `HotkeyBox.cs`**（`HotkeyBox` 是
-  `SettingsForm.cs` 内的私有嵌套类）。
+  `SettingsForm.cs`、`OverlayForm.cs`、`Beautifier.cs`、`ColorPickerForm.cs`、
+  `Gif.cs`、`GifRecorder.cs`、`Ocr.cs`、`OcrResultForm.cs`。**没有 `HotkeyBox.cs`**
+  （`HotkeyBox` 是 `SettingsForm.cs` 内的私有嵌套类）。
   > ⚠️ `build\run_probes.ps1` 与 `build\build.ps1` 的源码列表里**已经有 `src\PinForm.cs`**；
   > 手工编译时漏掉它会在 `AppContext2.cs` 上得到 CS0246（找不到 `PinForm`）。
+  > ⚠️ `Gif.cs` / `GifRecorder.cs` 用了 WPF 的 `System.Windows.Media.Imaging`，
+  > 手工编译**必须**加三个引用，且 `WindowsBase.dll` 在 `WPF\` 子目录、`System.Xaml.dll`
+  > 在 Framework64 根目录（写反会得到 CS0006）：
+  > `$fw = "$env:SystemRoot\Microsoft.NET\Framework64\v4.0.30319"` →
+  > `\r:$fw\WPF\PresentationCore.dll`、`\r:$fw\WPF\WindowsBase.dll`、`\r:$fw\System.Xaml.dll`
 
 ### 测试
 
-**首选：一条命令跑完全部 17 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 21 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
@@ -51,12 +57,18 @@ cd ScreenPen
 
 ```powershell
 $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+$fw  = "$env:SystemRoot\Microsoft.NET\Framework64\v4.0.30319"
 $refs = '/reference:System.dll','/reference:System.Core.dll',
-        '/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll'
+        '/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll',
+        # Gif.cs / GifRecorder.cs 需要 WPF 影像程序集（注意 WindowsBase 在 WPF\ 子目录）
+        "/reference:$fw\WPF\PresentationCore.dll",
+        "/reference:$fw\WPF\WindowsBase.dll",
+        "/reference:$fw\System.Xaml.dll"
 $srcs = 'src\Config.cs','src\SettingsStore.cs','src\Native.cs','src\OverlayForm.cs',
         'src\BrushCursor.cs','src\RegionSelectForm.cs','src\AppContext2.cs',
         'src\SettingsForm.cs','src\Shell.cs','src\PinForm.cs',
-        'src\Beautifier.cs','src\ColorPickerForm.cs'
+        'src\Beautifier.cs','src\ColorPickerForm.cs',
+        'src\Gif.cs','src\Ocr.cs','src\GifRecorder.cs','src\OcrResultForm.cs'
 & $csc /nologo /target:exe /platform:x64 /codepage:65001 `
       /out:build\obj\my_probe.exe $refs build\my_probe.cs $srcs
 .\build\obj\my_probe.exe
@@ -763,6 +775,107 @@ ShareX 花了 **4.5 年**才加上撤销重做（issue #4079），本项一次�
 
 ---
 
+### 1.7 第六轮升级：文字识别（OCR）+ 录制 GIF（已完成）
+
+本轮新增两个功能，共 **4 个新源文件、4 个新探针、12 个新配置键**。
+
+#### 1.7.1 为什么工具栏没有变成 5 个按钮
+
+区域选择界面的工具条**必须保持恰好 4 个按钮**——`pin_probe.cs`、`measure_toolbar.cs`
+（`labels.Length == 4`）、`region_probe.cs` 三处都在断言这件事，因为那个宽度是在
+小桌面上还能收得下的上限。
+
+所以 OCR / GIF 走的是**别的入口**，三个都有：
+
+1. **区域选择界面里的单键** `O`（识别）/ `G`（录制）——和原有的 `P`（贴图）同一个位置、
+   同一个写法，**只在没有 Ctrl/Alt 时生效**，所以 `Ctrl+O`/`Ctrl+G` 仍然空闲（有断言）。
+2. **两个新的全局热键** `Ctrl+Alt+O` / `Ctrl+Alt+G`。
+3. **托盘菜单**新增两项「识别选区文字…」「录制选区为 GIF…」。
+
+`RegionAction` 追加为 `Ocr = 4`、`RecordGif = 5`，**0/1/2/3 的取值一个都没动**
+（存档和既有探针依赖它们）。`ocr_gif_wiring_probe` 对这一点有显式断言。
+
+#### 1.7.2 GIF 编码：为什么必须自己回填字节
+
+这是本轮最硬的一个坑，**实测结论**：
+
+- WPF 的 `GifBitmapEncoder` **会静默丢掉每帧延时**——写进去 `5,40,15`，
+  再读出来是 `0,0,0`；而且**根本不写 `NETSCAPE2.0` 循环块**。
+- 所以 `Gif.cs` 的做法是：`GifBitmapEncoder` 出图 → **在原字节里就地回填延时** →
+  **再插入一个循环块**。
+- ⚠️ **关键偏移量：第一个块在字节 `13` 开始**（6 字节签名 + 7 字节逻辑屏幕描述符），
+  **不是 6**。这里写错 `PatchDelays` 会返回"未识别"，GIF 整个功能假成功——
+  `gif_delay_probe`（0/2）就是这个 bug 的保留回归样本。
+- 每帧延时的注入方式：GDI+ `Bitmap` → PNG 字节 →
+  `BitmapDecoder.Create(ms, PreservePixelFormat, OnLoad)` → `Frames[0]` →
+  `BitmapMetadata md = new BitmapMetadata("gif"); md.SetQuery("/grctlext/Delay", (ushort)cs);`
+  → `enc.Frames.Add(BitmapFrame.Create(bf, bf.Thumbnail, md, bf.ColorContexts))`。
+
+#### 1.7.3 OCR：不装 SDK 也能用系统引擎
+
+- 运行时是 **.NET Framework 4.8**，所以可以**反射**绑定 WinRT 的 `Windows.Media.Ocr`：
+  `Type.GetType("Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime")`。
+- WinRT 的异步方法用 `MethodInfo.Invoke` 拿回来的是**裸 `System.__ComObject`**，
+  必须**轮询 `Status`**（1=Completed / 2=Cancelled / 3=Error），再调 `GetResults()`。
+  `System.Runtime.WindowsRuntime`（`AsTask`/`GetAwaiter`）**要 .NET 4.5 起**，
+  所以 ShareX 那种 `await` 写法在本项目里用不了。
+- `OcrEngine.RecognizerLanguage` 是 `Windows.Globalization.Language` **对象**，
+  要读它的 `.LanguageTag`。`.Lines` 的声明类型是 `IReadOnlyList<OcrLine>`，
+  用 `as IEnumerable` 枚举才稳。
+- 本机实测：引擎可用，识别语言 1 个 = `zh-Hans-CN`，`"ScreenPen 12345"` 原样识别出来。
+
+#### 1.7.4 "OCR 返回空"的真凶是测试自己（重要）
+
+有一轮 5 条 OCR 断言全红，看着像产品坏了，**实际是探针的 bug**：
+
+- 探针用**点值字号**建字体（`new Font("Segoe UI", 40f)`），点值要乘
+  `Graphics.DpiY`，而 `DpiY` 跟**进程 DPI 感知**走。
+- 本机是 **200% DPI**，同一个测试文本量出 **867×155**，画布只有 **760×130**
+  —— **右边和下边都被裁掉**（墨迹盒 `(45,64)-(759,129)`），引擎当然什么都找不到。
+- 取消 DPI 感知（96 DPI）时同一份代码墨迹盒是 `(32,45)-(428,83)`，识别正常。
+- **修法**：探针**先钉住 DPI**（`SetProcessDpiAwarenessContext(new IntPtr(-4))`，
+  放在 `Main` 第一行），并且**所有测试字体改用 `GraphicsUnit.Pixel`**（像素单位不受 `DpiY` 影响）。
+- 同时加了一条**防裁剪断言**：扫出最右/最下的墨迹像素，断言没贴到画布边缘。
+  把 `PinDpi()` 注释掉后它会立刻报 `(ink reaches 759x129 of 760x130)`，
+  证明这条断言真的能抓住回归。
+
+> 顺手保留下来的三条健壮性改进（不是探针 hack，是产品改进）：
+> `OcrResult.RawText`（区分"引擎没找到"和"解析失败"）、
+> `ReadLines` 失败时**设置 `Error` 而不是静默返回 0 行**、
+> 上面那条防裁剪断言。
+
+#### 1.7.5 录制 GIF 的几个必须遵守的点
+
+- **录制框不能录进画面**：用 `Native.SetExcludedFromCapture`（`WDA_EXCLUDEFROMCAPTURE`）
+  把红框窗口排除掉；**这个调用失败时直接把红框隐藏**，绝不冒险把 UI 烤进帧里。
+- **采样用 `System.Windows.Forms.Timer`**，且**必须写全名**——裸 `Timer` 会被绑定到
+  `System.Timers.Timer`，得到 `CS1502/CS1503`。
+- `GifCountdownSeconds` 默认 **3**：探针测"时长上限"时**必须显式设成 0**，
+  否则 2 秒的等待全耗在倒计时里（这个坑踩过一次）。
+- 抓帧失败**要计数**（`GrabErrors`/`FirstGrabError`），不能 `catch { }` 吞掉——
+  吞掉之后"抓帧一直失败"和"画面一直没变"表现完全一样。
+- `FrameCount` 在 `Stop`/`Cancel` 之后**仍然可读**（`_storedFrames`），
+  否则探针会在结束后读到 0。
+
+#### 1.7.6 本轮的验证结果
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\run_probes.ps1` | **21/21 PASS**（新增 4 个：`gif_delta_probe` 6/0、`gif_ocr_probe` 47/0、`gif_recorder_probe` 29/0、`ocr_gif_wiring_probe` 56/0） |
+| `build\run_feasibility.ps1` | **4/4 PASS**（38 条断言） |
+| `verify_readme.py` | **7/7 通过**，README 的 **78 键**与程序逐一一致且可回环（连跑 3 次稳定） |
+| `layout_cards` | **21/0**，新增的 OCR / GIF 卡片无越界、无空白带 |
+| 发布构建 | `dist\ScreenPen.exe` **301,568 B**，sha256 `9B27348C…` |
+| 独立解码验证 | 用 Pillow 解码录制产物：**9 帧、240×160、延时 `[100×8, 500]`、`loop=0`**，8/8 帧与首帧不同（真的在动） |
+
+> ⚠️ **踩过的坑（务必记住）**：`verify_readme.py` 有一轮报 12 个新键"回环失败"，
+> 查下来是 **`dist\ScreenPen.exe` 还是旧的**（时间戳比源码早一天，且二进制里搜不到
+> `GifFps`）。**跨进程验收脚本跑的是构建产物，不是源码**——
+> 改完源码**必须重新 build 再跑**，否则会误判成产品 bug。
+> 这与"编译失败会留下旧 exe"是同一类陷阱。
+
+---
+
 ## 2. 待修复的缺陷（TODO）
 
 
@@ -1190,7 +1303,12 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (17/17)** | 编译并运行下面 17 个进程内探针，逐个打印 PASS/FAIL |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (21/21)** | 编译并运行下面 21 个进程内探针，逐个打印 PASS/FAIL。**源码列表已含 16 个 `.cs`**，并且会自动追加 3 个 WPF 引用（`Gif.cs`/`GifRecorder.cs` 需要） |
+| `build\gif_delta_probe.cs` | 进程内 | **6/6 PASS** | **本轮新增**：GIF 字节级回填。**第一块的偏移量是 13**（6 字节签名 + 7 字节逻辑屏幕描述符），延时要能被独立解码器读回 |
+| `build\gif_ocr_probe.cs` | 进程内 | **47/47 PASS** | **本轮新增**：GIF（延时 / 循环块 / 合并帧 / 上限）+ OCR（识别 / 放大 / 坐标换算 / 语言标签 / 工作线程超时 / `RawText` 兜底）。**探针必须先 `SetProcessDpiAwarenessContext(-4)` 并把测试字体用 `GraphicsUnit.Pixel` 建**，否则 200% DPI 下文字被裁、OCR 必然空手而归 |
+| `build\gif_recorder_probe.cs` | 进程内 | **29/29 PASS** | **本轮新增**：录制真的在采样（驱动一个会动的 `Form`，静止桌面会合并成 1 帧而假失败）、写出的帧数与解码数一致、帧尺寸等于选区、时长上限、取消、倒计时、极小区域拒绝、**红框没被烤进画面** |
+| `build\ocr_gif_wiring_probe.cs` | 进程内 | **56/56 PASS** | **本轮新增**：接线正确性。`RegionAction` 0/1/2/3 **取值不变**、工具条**仍是 4 个按钮**且不出屏、`O`/`G` 选中新动作而 **`Ctrl+O`/`Ctrl+G` 仍空闲**、原有 `P`/`Ctrl+C`/`Enter`/`Esc` 都没坏、10 个默认热键互不重复、`OcrResultForm` 显示文本、设置窗口读写 + 落盘回环、越界值 `Clamp` |
+
 | `build\tier1_probe.cs` | 进程内 | **78 PASS / 0 FAIL** | **本轮新增**：第一梯队四项功能。9 组：枚举与笔画、撤销重做（多级 + 序号回收）、序号徽标编号、荧光笔（**alpha 独立性**：改透明度不影响其它笔画）、箭头三样式（**按像素差**断言三种样式几何确实不同）、窗口几何（DWM 物理边界）、`PixelAt`、美化器（圆角不泄漏内容用 `BeautifyRadius=0` 差分验证）、设置回环 |
 | `build\layout_cards.cs` | 进程内 | **21 PASS / 0 FAIL** | **本轮新增**：卡片布局健全性。① 每个控件四面都在自己的卡内；② 卡片互不重叠；③ 卡片内容下方无 >40px 空白；④ 溢出页的 `AutoScrollMinSize` 能滚到最后一卡。**这是"卡片底部大片空白"的回归防线** |
 | `build\hotkey_conflict_probe.cs` | 进程内 | **30/30 PASS** | 快捷键冲突 UX（含 `PromptOverride`）。**本轮改法**：键行数不再硬编码，改为与窗体自己的 `_bindings` 集合比数量 |
@@ -1248,7 +1366,37 @@ Accent   = RGB(232, 160, 0)
 
 > 按**倒序**排列：`5.0` 是本轮，越往后越早。
 
-### 5.0 本轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
+### 5.0 本轮（文字识别 OCR + 录制 GIF）
+
+| 文件 | 变更 |
+|---|---|
+| `src\Gif.cs` | **新增（第 14 个源文件）**，约 430 行。`public static class Gif` + `public sealed class GifBuilder`。核心是**字节级回填**：`GifBitmapEncoder` 会静默丢帧延时且不写循环块，所以 `Encode(IList<byte[]>, IList<int>, string, bool)` 先用编码器出图，再 `PatchDelays` 就地改延时、`PatchLoop` 插入 `NETSCAPE2.0`。⚠️ **`int p = 13;` / `int at = 13;`——第一个块在字节 13 开始**（6 签名 + 7 逻辑屏幕描述符），写成 6 会返回"无法写入帧延时（GIF 结构未识别）"而假成功。另有 `ToPngBytes`、`FramesIdentical`（`LockBits` + `Marshal.Copy` 分块比较）、`SkipSubBlocks`。`GifBuilder`：`Add(Bitmap)` / `Save(path, loop)` / `Delays` / `IsFull` / `MaxFrameDelayCs = 1000` / `MaxStoredFrames = 4000` |
+| `src\GifRecorder.cs` | **新增（第 15 个源文件）**，约 430 行。`GifRecorder : IDisposable` + `RecorderChrome : Form`。**采样计时器必须写全 `System.Windows.Forms.Timer`**（裸 `Timer` 绑到 `System.Timers.Timer` → CS1502/CS1503）；`GifCountdownSeconds` 用第二个 1 秒计时器。`FrameCount`/`CollapsedFrames` 经 `_storedFrames`/`_collapsedFrames` **在 `Stop`/`Cancel` 之后仍可读**；抓帧失败计入 `GrabErrors`/`FirstGrabError`（**不能 `catch { }` 吞掉**——吞掉后"一直失败"和"画面没变"表现一样）。`RecorderChrome` 用 `TransparencyKey` + `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE`，**`SetExcludedFromCapture` 失败就永久隐藏红框**，绝不让 UI 进画面 |
+| `src\Ocr.cs` | **新增（第 16 个源文件）**，约 700 行。`OcrWord` / `OcrLine` / `OcrResult`（含 **`RawText`**，用来区分"引擎没找到文字"和"解析失败"）+ `public static class Ocr`。反射绑定 WinRT `Windows.Media.Ocr`；异步返回的是**裸 `__ComObject`**，必须**轮询 `Status`**（1/2/3）再 `GetResults()`——`System.Runtime.WindowsRuntime` 的 `AsTask`/`GetAwaiter` 要 .NET 4.5+，**用不了**。`RecognizerLanguage` 是 `Language` **对象**要读 `.LanguageTag`。`MinUsefulDimension = 100` / `AbsoluteMinDimension = 40`；`RecognizeOnWorker` 跑独立 STA 线程（默认 30 秒超时）；`ReadLines` 失败时**设置 `Error` 而不是静默返回 0 行** |
+| `src\OcrResultForm.cs` | **新增（第 17 个源文件）**。只读多行 `TextBox`（可选中、可再次复制）+ 复制/关闭按钮；`ShowResult(text, langTag, copied)` 用 `using` + `ShowDialog` 管生命周期；测试缝 `TextForTest` / `CreateForTest` |
+| `src\Config.cs` | `OcrKey = "Ctrl+Alt+O"` / `GifKey = "Ctrl+Alt+G"`；**4 个 OCR + 6 个 GIF 字段**（`OcrCopyToClipboard` / `OcrKeepLineBreaks` / `OcrUpscaleSmall` / `OcrLanguage`、`GifFps` / `GifMaxSeconds` / `GifLoop` / `GifSkipIdenticalFrames` / `GifShowBorder` / `GifCountdownSeconds`）；`Clamp()` 补范围（`OcrUpscaleSmall` 0~8、`GifFps` 2~25、`GifMaxSeconds` 1~300、`GifCountdownSeconds` 0~10、`OcrLanguage` null→`""`）；空白键回退清单加两个新键 |
+| `src\SettingsStore.cs` | `Load` / `Save` **各加 12 行**（逐字段手写，非反射）。**另修一个既有 bug**：`S("FollowKey", …)` 重复写了一次（JSON 里出现重复键），删掉 `BrushCursorSize` 旁那一行 |
+| `src\RegionSelectForm.cs` | `RegionAction` 追加 **`Ocr = 4` / `RecordGif = 5`**（**0/1/2/3 一个都没动**）；`OnKeyDown` 增加裸 `O` / `G`，**放在 `Ctrl` 分支之后**（与裸 `P` 同位置），所以 `Ctrl+O`/`Ctrl+G` 仍空闲。**工具条刻意保持 4 个按钮**——三处探针在断言这件事 |
+| `src\AppContext2.cs` | `HK_OCR = 9` / `HK_GIF = 10`；新增 `OcrText(Bitmap)` / `RecordGif(Rectangle)` / `StopRecordingIfAny()` / `SafeSetClipboardText()`（5 次重试）；`RegionScreenshot` 在贴图分支之后加两个**提前返回**分支——OCR 用裁剪图，**GIF 必须丢掉 `cropped`/`frozen` 用实时屏幕**；托盘加两项；`OwnsHotkey` 的 `mine[]` 补齐（原来漏了 `WindowShotKey`/`ColorPickerKey`）；`Quit()` 调 `StopRecordingIfAny()` |
+| `src\SettingsForm.cs` | 新增两个 `HotkeyBox`（`_hkOcr` / `_hkGif`）挂在「功能快捷键」卡上（共 10 行）；**新增 `BuildOcrCard()`**（复制开关 / 保留换行 / 小图放大 / 识别语言下拉，会实际查 `Ocr.AvailableLanguages()` 并把引擎状态写进说明文字）与 **`BuildGifCard()`**（帧率 / 最长时长 / 倒计时 / 红框开关 / 循环 / 合并帧）；`LoadDraftIntoControls` / `OnSave` 各补 12 项；新增 `SelectOcrLanguage` / `SelectedOcrLanguage`（语言被卸载时回退到「跟随系统」）；新增一组 `internal ...ForTest` 测试缝 |
+| `build\gif_delta_probe.cs` | **新增**。字节级验证延时回填与循环块（`int p = 13`），6/0 |
+| `build\gif_ocr_probe.cs` | **新增**，47/0。`Main` 第一句 `PinDpi()`（`SetProcessDpiAwarenessContext(-4)`），**测试字体一律 `GraphicsUnit.Pixel`**；含防裁剪断言（扫最右/最下墨迹像素） |
+| `build\gif_recorder_probe.cs` | **新增**，29/0。驱动一个会动的 `Form`（静止桌面会合并成 1 帧）+ `Pump()` 泵消息；断言帧数=解码数、帧尺寸=选区、**红框没被烤进画面** |
+| `build\ocr_gif_wiring_probe.cs` | **新增**，56/0。断言 `RegionAction` 取值稳定、**工具条仍是 4 个按钮**、`O`/`G` 生效而 `Ctrl+O`/`Ctrl+G` 空闲、原有按键没坏、10 个默认热键不重复、设置窗口读写 + 落盘回环、越界值 Clamp |
+| `build\run_probes.ps1` | 探针数 17 → **21**；源码列表 12 → **16**；**新增 WPF 引用**（`$fwDir\WPF\PresentationCore.dll`、`WPF\WindowsBase.dll`、`System.Xaml.dll`），缺文件只警告不失败 |
+| `build\build.ps1` | 自动从 `csc.exe` 所在目录推导 `$fwDir` 并追加同样的 3 个 WPF 引用（缺文件警告不失败），这样 `Gif.cs` 能进发布构建 |
+| `README.md` | 特性行 + 体积 265→**294 KB** + 配置键数 66→**78**；新增 **六、文字识别（OCR）** 与 **七、录制 GIF 动图** 两节；快捷键表补 `Ctrl+Alt+O`/`Ctrl+Alt+G`；配置 JSON 块补 12 个键；源码表 13→**17** 行；探针数 17→**21**；章节重新编号为 一~十五 |
+| `HANDOVER.md` | **§1.7（OCR + GIF：工具条为何不加按钮、GIF 字节回填、OCR 反射、**"OCR 返回空"其实是探针 DPI bug**、录制注意事项、验证表）** + §0/§4/§5 计数更新 + 本节 |
+
+> 本轮**没有**改动的源文件：`src\Program.cs`、`src\Shell.cs`、`src\BrushCursor.cs`、`src\PinForm.cs`、
+> `src\Beautifier.cs`、`src\ColorPickerForm.cs`、`src\Native.cs`（复用了既有的
+> `CaptureRegion` / `SetExcludedFromCapture`）。
+
+> ⚠️ **本轮最大的陷阱**：`verify_readme.py` 一度报 12 个新键"回环失败"，
+> 差点被当成产品 bug。实际是 **`dist\ScreenPen.exe` 还是旧的**——
+> 跨进程验收脚本跑的是**构建产物**，改完源码必须先 `build.ps1` 再跑。
+
+### 5.1 上一轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
 
 | 文件 | 变更 |
 |---|---|

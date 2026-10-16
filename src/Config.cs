@@ -144,6 +144,10 @@ namespace ScreenPen
         public string ColorPickerKey = "Ctrl+Alt+P";
         /// <summary>Capture the window under the pointer.</summary>
         public string WindowShotKey = "Ctrl+Alt+W";
+        /// <summary>Recognise the text inside the selected region.</summary>
+        public string OcrKey = "Ctrl+Alt+O";
+        /// <summary>Record the selected region to an animated GIF.</summary>
+        public string GifKey = "Ctrl+Alt+G";
 
         public int PenWidth = 3;
         public int MinPenWidth = 1;
@@ -231,6 +235,39 @@ namespace ScreenPen
         public int PickerLoupeSize = 150;
         /// <summary>Zoom factor of the colour-picker loupe.</summary>
         public int PickerZoom = 8;
+
+        // ---- OCR -------------------------------------------------------------
+        /// <summary>Also copy the recognised text to the clipboard.</summary>
+        public bool OcrCopyToClipboard = true;
+        /// <summary>Recognise line by line instead of as one block of text.</summary>
+        public bool OcrKeepLineBreaks = true;
+        /// <summary>
+        /// Upscale factor applied before recognition when the selected region is
+        /// small. Windows' OcrEngine refuses images below roughly 40px on a side
+        /// and recognises small text poorly, so this is scaled up rather than
+        /// rejected. 0 disables the upscale.
+        /// </summary>
+        public int OcrUpscaleSmall = 3;
+        /// <summary>BCP-47 tag of the recognition language, e.g. "zh-Hans-CN".</summary>
+        public string OcrLanguage = "";
+
+        // ---- GIF recording ---------------------------------------------------
+        /// <summary>Frames per second captured while recording.</summary>
+        public int GifFps = 10;
+        /// <summary>Hard stop for a single recording, in seconds.</summary>
+        public int GifMaxSeconds = 30;
+        /// <summary>Loop the recorded GIF forever instead of playing it once.</summary>
+        public bool GifLoop = true;
+        /// <summary>
+        /// Drop frames identical to the previous one and extend its delay
+        /// instead. Screen recordings are mostly static, so this is what keeps
+        /// the files small; it costs nothing visually.
+        /// </summary>
+        public bool GifSkipIdenticalFrames = true;
+        /// <summary>Draw the recording border and stop bar while recording.</summary>
+        public bool GifShowBorder = true;
+        /// <summary>Show a countdown before recording starts.</summary>
+        public int GifCountdownSeconds = 3;
 
         // ---- scroll-follow mode ---------------------------------------------
         /// <summary>
@@ -346,6 +383,21 @@ namespace ScreenPen
             if (PickerZoom < 2) PickerZoom = 2;
             if (PickerZoom > 32) PickerZoom = 32;
 
+            // OCR: 0 disables the small-region upscale, anything above 8 is
+            // pointless (it only costs memory and time).
+            if (OcrUpscaleSmall < 0) OcrUpscaleSmall = 0;
+            if (OcrUpscaleSmall > 8) OcrUpscaleSmall = 8;
+            if (OcrLanguage == null) OcrLanguage = "";
+
+            // GIF: the timer that samples the screen is driven by this rate, so
+            // an absurd value would either freeze the UI or produce a slideshow.
+            if (GifFps < 2) GifFps = 2;
+            if (GifFps > 25) GifFps = 25;
+            if (GifMaxSeconds < 1) GifMaxSeconds = 1;
+            if (GifMaxSeconds > 300) GifMaxSeconds = 300;
+            if (GifCountdownSeconds < 0) GifCountdownSeconds = 0;
+            if (GifCountdownSeconds > 10) GifCountdownSeconds = 10;
+
             // A blank tool key would make that tool unreachable, so restore the
             // shipped default rather than silently disabling the tool.
             Settings def = null;
@@ -364,6 +416,8 @@ namespace ScreenPen
             if (string.IsNullOrWhiteSpace(RedoKey)) { def = def ?? new Settings(); RedoKey = def.RedoKey; }
             if (string.IsNullOrWhiteSpace(ColorPickerKey)) { def = def ?? new Settings(); ColorPickerKey = def.ColorPickerKey; }
             if (string.IsNullOrWhiteSpace(WindowShotKey)) { def = def ?? new Settings(); WindowShotKey = def.WindowShotKey; }
+            if (string.IsNullOrWhiteSpace(OcrKey)) { def = def ?? new Settings(); OcrKey = def.OcrKey; }
+            if (string.IsNullOrWhiteSpace(GifKey)) { def = def ?? new Settings(); GifKey = def.GifKey; }
         }
 
         /// <summary>

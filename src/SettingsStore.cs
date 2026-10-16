@@ -46,6 +46,8 @@ namespace ScreenPen
                 s.RedoKey = Json.Str(m, "RedoKey", s.RedoKey);
                 s.ColorPickerKey = Json.Str(m, "ColorPickerKey", s.ColorPickerKey);
                 s.WindowShotKey = Json.Str(m, "WindowShotKey", s.WindowShotKey);
+                s.OcrKey = Json.Str(m, "OcrKey", s.OcrKey);
+                s.GifKey = Json.Str(m, "GifKey", s.GifKey);
 
                 s.PenWidth = Json.Int(m, "PenWidth", s.PenWidth);
                 s.MinPenWidth = Json.Int(m, "MinPenWidth", s.MinPenWidth);
@@ -98,6 +100,18 @@ namespace ScreenPen
 
                 s.PickerLoupeSize = Json.Int(m, "PickerLoupeSize", s.PickerLoupeSize);
                 s.PickerZoom = Json.Int(m, "PickerZoom", s.PickerZoom);
+
+                s.OcrCopyToClipboard = Json.Bool(m, "OcrCopyToClipboard", s.OcrCopyToClipboard);
+                s.OcrKeepLineBreaks = Json.Bool(m, "OcrKeepLineBreaks", s.OcrKeepLineBreaks);
+                s.OcrUpscaleSmall = Json.Int(m, "OcrUpscaleSmall", s.OcrUpscaleSmall);
+                s.OcrLanguage = Json.Str(m, "OcrLanguage", s.OcrLanguage);
+
+                s.GifFps = Json.Int(m, "GifFps", s.GifFps);
+                s.GifMaxSeconds = Json.Int(m, "GifMaxSeconds", s.GifMaxSeconds);
+                s.GifLoop = Json.Bool(m, "GifLoop", s.GifLoop);
+                s.GifSkipIdenticalFrames = Json.Bool(m, "GifSkipIdenticalFrames", s.GifSkipIdenticalFrames);
+                s.GifShowBorder = Json.Bool(m, "GifShowBorder", s.GifShowBorder);
+                s.GifCountdownSeconds = Json.Int(m, "GifCountdownSeconds", s.GifCountdownSeconds);
             }
             catch
             {
@@ -153,6 +167,8 @@ namespace ScreenPen
                 S("RedoKey", s.RedoKey);
                 S("ColorPickerKey", s.ColorPickerKey);
                 S("WindowShotKey", s.WindowShotKey);
+                S("OcrKey", s.OcrKey);
+                S("GifKey", s.GifKey);
                 I("HighlighterAlpha", s.HighlighterAlpha);
                 I("ArrowStyleIndex", s.ArrowStyleIndex);
                 F("StepBadgeSize", s.StepBadgeSize);
@@ -165,6 +181,16 @@ namespace ScreenPen
                 S("BeautifyColor2", s.BeautifyColor2);
                 I("PickerLoupeSize", s.PickerLoupeSize);
                 I("PickerZoom", s.PickerZoom);
+                B("OcrCopyToClipboard", s.OcrCopyToClipboard);
+                B("OcrKeepLineBreaks", s.OcrKeepLineBreaks);
+                I("OcrUpscaleSmall", s.OcrUpscaleSmall);
+                S("OcrLanguage", s.OcrLanguage);
+                I("GifFps", s.GifFps);
+                I("GifMaxSeconds", s.GifMaxSeconds);
+                B("GifLoop", s.GifLoop);
+                B("GifSkipIdenticalFrames", s.GifSkipIdenticalFrames);
+                B("GifShowBorder", s.GifShowBorder);
+                I("GifCountdownSeconds", s.GifCountdownSeconds);
                 I("PenWidth", s.PenWidth);
                 I("MinPenWidth", s.MinPenWidth);
                 I("MaxPenWidth", s.MaxPenWidth);
@@ -200,7 +226,6 @@ namespace ScreenPen
 
                 B("ShowBrushCursor", s.ShowBrushCursor);
                 I("BrushCursorSize", s.BrushCursorSize);
-                S("FollowKey", s.FollowKey);
 
                 B("ScrollFollowEnabled", s.ScrollFollowEnabled);
                 B("WheelScrollsDocument", s.WheelScrollsDocument);

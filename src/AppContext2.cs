@@ -27,12 +27,15 @@ namespace ScreenPen
         const int HK_COPYSHOT = 6;
         const int HK_WINDOWSHOT = 7;
         const int HK_PICKER = 8;
+        const int HK_OCR = 9;
+        const int HK_GIF = 10;
 
         Settings _cfg;
         OverlayForm _overlay;
         NotifyIcon _tray;
         HotkeyWindow _msgWindow;
         SettingsForm _settingsForm;
+        GifRecorder _gifRecorder;
 
         readonly List<int> _registered = new List<int>();
 
@@ -121,6 +124,8 @@ namespace ScreenPen
             menu.Items.Add(MenuItem("区域截图并保存…", (s, e) => RegionScreenshot(RegionAction.SaveToFile)));
             menu.Items.Add(MenuItem("区域截图并复制到剪贴板", (s, e) => RegionScreenshot(RegionAction.CopyToClipboard)));
             menu.Items.Add(MenuItem("区域截图并钉在桌面", (s, e) => RegionScreenshot(RegionAction.PinToDesktop)));
+            menu.Items.Add(MenuItem("识别选区文字…", (s, e) => RegionScreenshot(RegionAction.Ocr)));
+            menu.Items.Add(MenuItem("录制选区为 GIF…", (s, e) => RegionScreenshot(RegionAction.RecordGif)));
             menu.Items.Add(MenuItem("整屏截图并保存…", (s, e) => ScreenshotToFile()));
             menu.Items.Add(MenuItem("复制整屏到剪贴板", (s, e) => CopyToClipboard()));
             menu.Items.Add(new ToolStripSeparator());
@@ -167,6 +172,8 @@ namespace ScreenPen
             TryRegister(HK_COPYSHOT, _cfg.CopyShotKey, "截图并复制");
             TryRegister(HK_WINDOWSHOT, _cfg.WindowShotKey, "窗口截图");
             TryRegister(HK_PICKER, _cfg.ColorPickerKey, "取色器");
+            TryRegister(HK_OCR, _cfg.OcrKey, "文字识别");
+            TryRegister(HK_GIF, _cfg.GifKey, "录制 GIF");
             TryRegister(HK_ZOOM_IN, _cfg.ZoomInKey, "放大");
             TryRegister(HK_ZOOM_OUT, _cfg.ZoomOutKey, "缩小");
         }
@@ -236,6 +243,8 @@ namespace ScreenPen
             string[] mine = new string[]
             {
                 _cfg.ToggleKey, _cfg.LiveZoomKey, _cfg.ScreenshotKey, _cfg.CopyShotKey,
+                _cfg.WindowShotKey, _cfg.ColorPickerKey,
+                _cfg.OcrKey, _cfg.GifKey,
                 _cfg.ZoomInKey, _cfg.ZoomOutKey
             };
             foreach (string s in mine)
@@ -256,6 +265,8 @@ namespace ScreenPen
                 case HK_COPYSHOT: RegionScreenshot(RegionAction.CopyToClipboard); break;
                 case HK_WINDOWSHOT: WindowScreenshot(); break;
                 case HK_PICKER: StartColorPicker(); break;
+                case HK_OCR: RegionScreenshot(RegionAction.Ocr); break;
+                case HK_GIF: RegionScreenshot(RegionAction.RecordGif); break;
                 case HK_ZOOM_IN:
                     if (_overlay.Visible) _overlay.ZoomBy(120, CursorAtClient());
                     break;
@@ -637,6 +648,26 @@ namespace ScreenPen
                     return;
                 }
 
+                if (action == RegionAction.Ocr)
+                {
+                    // Recognition reads the frozen crop, so the text the user
+                    // selected is exactly what gets recognised.
+                    OcrText(cropped);
+                    return;
+                }
+
+                if (action == RegionAction.RecordGif)
+                {
+                    // Recording needs the LIVE screen, not the frozen crop, so
+                    // the frozen backdrop is released first and the region is
+                    // re-captured on every frame.
+                    cropped.Dispose();
+                    cropped = null;
+                    if (frozen != null) { frozen.Dispose(); frozen = null; }
+                    RecordGif(region);
+                    return;
+                }
+
                 try
                 {
                     if (action == RegionAction.CopyToClipboard)
@@ -688,6 +719,125 @@ namespace ScreenPen
                     catch { }
                 }
             }
+        }
+
+        // =====================================================================
+        //  OCR
+        // =====================================================================
+
+        /// <summary>
+        /// Recognises the text in <paramref name="shot"/> and shows it, copying it
+        /// to the clipboard when the user asked for that.
+        ///
+        /// Recognition runs on a worker so the UI stays responsive, but the result
+        /// dialog is shown back on the UI thread.
+        /// </summary>
+        void OcrText(Bitmap shot)
+        {
+            if (shot == null) return;
+
+            string detail;
+            if (!Ocr.IsAvailable(out detail))
+            {
+                Balloon("文字识别不可用", detail, ToolTipIcon.Warning);
+                return;
+            }
+
+            OcrResult result = null;
+            try
+            {
+                result = Ocr.RecognizeOnWorker(shot, _cfg, 20000);
+            }
+            catch (Exception ex)
+            {
+                Balloon("文字识别失败", ex.Message, ToolTipIcon.Warning);
+                return;
+            }
+
+            if (result == null || !result.Ok)
+            {
+                Balloon("文字识别失败",
+                        result == null ? "识别没有返回结果。" : result.Error,
+                        ToolTipIcon.Warning);
+                return;
+            }
+
+            string text = result.Text == null ? "" : result.Text.Trim();
+            if (text.Length == 0)
+            {
+                Balloon("没有识别到文字",
+                        "选区内没有识别到文字，可以试着选大一点或放大后再试。",
+                        ToolTipIcon.Info);
+                return;
+            }
+
+            bool copied = false;
+            if (_cfg.OcrCopyToClipboard)
+            {
+                copied = SafeSetClipboardText(text);
+                if (copied) PlayShotSound();
+            }
+
+            OcrResultForm.ShowResult(text, result.LanguageTag, copied);
+        }
+
+        // =====================================================================
+        //  GIF recording
+        // =====================================================================
+
+        /// <summary>Records <paramref name="region"/> to a GIF, reporting progress.</summary>
+        void RecordGif(Rectangle region)
+        {
+            if (_gifRecorder != null && (_gifRecorder.IsRecording || _gifRecorder.IsCountingDown))
+            {
+                Balloon("正在录制", "已经有一个 GIF 正在录制中。", ToolTipIcon.Info);
+                return;
+            }
+
+            GifRecorder rec = new GifRecorder(_cfg);
+            _gifRecorder = rec;
+
+            rec.Finished += delegate
+            {
+                _gifRecorder = null;
+                string file = rec.LastFile;
+                if (file != null)
+                {
+                    Balloon("GIF 已保存",
+                            string.Format("{0} 帧，{1} 秒\n{2}",
+                                    rec.FrameCount, rec.ElapsedSeconds, file),
+                            ToolTipIcon.Info);
+                    PlayShotSound();
+                }
+                else
+                {
+                    string why = rec.StopReason;
+                    if (why != null && why != "已取消")
+                        Balloon("GIF 录制结束", why, ToolTipIcon.Warning);
+                }
+                rec.Dispose();
+            };
+
+            try
+            {
+                rec.Start(region, null);
+            }
+            catch (Exception ex)
+            {
+                _gifRecorder = null;
+                rec.Dispose();
+                Balloon("无法开始录制", ex.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        /// <summary>Stops any recording in progress, e.g. when the app is quitting.</summary>
+        internal void StopRecordingIfAny()
+        {
+            GifRecorder rec = _gifRecorder;
+            if (rec == null) return;
+            _gifRecorder = null;
+            try { rec.Stop(null); } catch { }
+            try { rec.Dispose(); } catch { }
         }
 
         /// <summary>
@@ -999,6 +1149,20 @@ namespace ScreenPen
             return false;
         }
 
+        /// <summary>Puts text on the clipboard, retrying while another app holds it.</summary>
+        bool SafeSetClipboardText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            for (int i = 0; i < 5; i++)
+            {
+                try { Clipboard.SetText(text); return true; }
+                catch (Exception) { }
+                try { System.Threading.Thread.Sleep(60); }
+                catch (Exception) { }
+            }
+            return false;
+        }
+
         void PlayShotSound()
         {
             if (!_cfg.PlaySoundOnScreenshot) return;
@@ -1200,6 +1364,9 @@ namespace ScreenPen
             {
                 UnregisterAll();
                 HideOverlay();
+                // A recording in progress owns a border window and a timer; write
+                // out what was captured and tear them down before exiting.
+                StopRecordingIfAny();
                 // Pins are unowned top-level windows: without this they would stay
                 // floating over the desktop after the process exits its tray.
                 CloseAllPins();

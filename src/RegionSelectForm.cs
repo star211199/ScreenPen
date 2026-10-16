@@ -13,7 +13,11 @@ namespace ScreenPen
         SaveToFile = 1,
         CopyToClipboard = 2,
         /// <summary>把选区作为一张置顶贴图钉在桌面上（Snipaste 风格）。</summary>
-        PinToDesktop = 3
+        PinToDesktop = 3,
+        /// <summary>识别选区里的文字（Windows 内置 OCR）。</summary>
+        Ocr = 4,
+        /// <summary>把选区录制成 GIF 动图。</summary>
+        RecordGif = 5
     }
 
     /// <summary>
@@ -592,6 +596,14 @@ namespace ScreenPen
             // bare P is free; it is checked *after* the Ctrl branches so it can
             // never shadow a future Ctrl+P.
             if (!e.Control && !e.Alt && e.KeyCode == Keys.P) { Finish(RegionAction.PinToDesktop); e.Handled = true; return; }
+
+            // Bare O recognises the text and bare G records a GIF. Both are
+            // keyboard-only on purpose: the toolbar is a fixed four buttons, and
+            // a fifth would push the row past the width it can shrink to on a
+            // small desktop. Also checked after the Ctrl branches, so a future
+            // Ctrl+O / Ctrl+G is still available.
+            if (!e.Control && !e.Alt && e.KeyCode == Keys.O) { Finish(RegionAction.Ocr); e.Handled = true; return; }
+            if (!e.Control && !e.Alt && e.KeyCode == Keys.G) { Finish(RegionAction.RecordGif); e.Handled = true; return; }
 
             // Arrow keys nudge the pending selection, which makes pixel-exact
             // regions possible without a steady hand.

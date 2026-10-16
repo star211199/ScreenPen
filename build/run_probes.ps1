@@ -13,11 +13,31 @@ $refs = @(
   '/reference:System.Drawing.dll'
   '/reference:System.Windows.Forms.dll'
 )
+
+# Gif.cs and GifRecorder.cs use System.Windows.Media.Imaging (the GIF encoder),
+# so every probe now needs the WPF imaging assemblies. WindowsBase lives in the
+# WPF subdirectory of the framework, not beside csc.exe; referencing the root
+# copy fails with CS0006.
+$fwDir = Split-Path -Parent $csc
+$wpfRefs = @(
+  "/reference:$fwDir\WPF\PresentationCore.dll"
+  "/reference:$fwDir\WPF\WindowsBase.dll"
+  "/reference:$fwDir\System.Xaml.dll"
+)
+foreach ($r in $wpfRefs) {
+  $path = $r.Substring('/reference:'.Length)
+  if (-not (Test-Path $path)) {
+    Write-Host "WARNING: missing reference $path" -ForegroundColor Yellow
+  }
+}
+$refs += $wpfRefs
+
 $srcs = @(
   'src\Config.cs', 'src\SettingsStore.cs', 'src\Native.cs', 'src\OverlayForm.cs'
   'src\BrushCursor.cs', 'src\RegionSelectForm.cs', 'src\AppContext2.cs'
   'src\SettingsForm.cs', 'src\Shell.cs', 'src\PinForm.cs'
   'src\Beautifier.cs', 'src\ColorPickerForm.cs'
+  'src\Gif.cs', 'src\Ocr.cs', 'src\GifRecorder.cs', 'src\OcrResultForm.cs'
 )
 
 $probes = @(
@@ -25,6 +45,7 @@ $probes = @(
   'smooth_probe', 'follow_probe', 'footer_probe', 'layout_probe', 'measure_ui'
   'hotkey_record_probe', 'text_focus_probe', 'hostile_focus_probe', 'pin_probe'
   'typing_probe', 'measure_toolbar', 'tier1_probe', 'layout_cards'
+  'gif_delta_probe', 'gif_ocr_probe', 'gif_recorder_probe', 'ocr_gif_wiring_probe'
 )
 
 $failed = @()

@@ -101,6 +101,20 @@ $refs = @(
     'System.Windows.Forms.dll'
 )
 
+# ---- WPF imaging references ------------------------------------------------
+# The GIF recorder uses GifBitmapEncoder, which lives in PresentationCore.
+# WindowsBase.dll sits in the WPF *subdirectory* of the framework folder, not
+# beside csc.exe, and System.Xaml.dll must come from the framework folder rather
+# than the GAC - referencing either from the wrong place is a hard CS0006.
+$fwDir = Split-Path -Parent $csc
+foreach ($wpf in @(
+    (Join-Path $fwDir 'WPF\PresentationCore.dll'),
+    (Join-Path $fwDir 'WPF\WindowsBase.dll'),
+    (Join-Path $fwDir 'System.Xaml.dll'))) {
+    if (Test-Path $wpf) { $refs += $wpf }
+    else { Write-Host "warning  : missing WPF reference $wpf (GIF recording disabled)" -ForegroundColor Yellow }
+}
+
 $cscArgs = @(
     '/nologo',
     '/target:winexe',
