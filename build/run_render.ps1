@@ -8,7 +8,7 @@
 #
 # Usage:
 #   .\build\run_render.ps1                     # render_pin
-#   .\build\run_render.ps1 render_ui render_scroll
+#   .\build\run_render.ps1 render_ui render_scroll render_gifresult
 #
 # Output lands in build\shots\render\.
 param([string[]] $Names = @('render_pin'))

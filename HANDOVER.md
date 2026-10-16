@@ -1764,7 +1764,8 @@ Accent   = RGB(232, 160, 0)
 | `build\pin_probe.cs` | 工具条检查从四个具名矩形改为**遍历 `ToolbarButtonCountForTest`**（尺寸/在窗内/两两不重叠） |
 | `build\measure_toolbar.cs` | 默认动作 3 → **5** 种（加 `Ocr` / `RecordGif`），按钮 4 → **6** 个，粗体主按钮改为 `PrimaryIndexFor(act)` |
 | `build\run_probes.ps1` | `$srcs` 加 `GifResultForm.cs` / `KeyboardHook.cs`；`$probes` 加 `ux_fix_probe`；新增 **`-Only <名字>`** 参数单跑探针 |
-| `build\run_render.ps1` | **新增**。把 `render_pin` / `render_ui` / `render_scroll` 的编译运行固定下来（**排除 `Program.cs`**，加 3 个 WPF 引用），产物落在 `build\shots\render\`。这些渲染器不在 `$probes` 里，以前只能手敲编译命令 |
+| `build\run_render.ps1` | **新增**。把 `render_pin` / `render_ui` / `render_scroll` / `render_gifresult` 的编译运行固定下来（**排除 `Program.cs`**，加 3 个 WPF 引用），产物落在 `build\shots\render\`。这些渲染器不在 `$probes` 里，以前只能手敲编译命令 |
+| `build\render_gifresult.cs` | **新增**。把新的 GIF 结果窗口渲染成 PNG（`40_gif_result.png` / `41_gif_result_longpath.png`），后者用一个很深的目录验证路径框会滚动到文件名的位置。几何断言看不出"路径到底看不看得清" |
 | `build\capture_ui.py` | 新增 `client_crop()`：用 `GetClientRect` + `ClientToScreen` 裁掉非客户区（200% DPI 下是顶部 58px 的标题栏），让 PNG 与 `verify_ui.py` 的客户端常量一致；`capture()` 改为返回图像对象；翻页后**校验页面真的变了**，没变就重试（第一次合成点击有时被激活吞掉，曾把 `01_brush.png` 存成快捷键页）（§1.9.8） |
 | `build\verify_ui.py` | 主文字阈值 8000 → **4000**。旧阈值是被标题栏白送的像素撑住的，裁掉标题栏后 `关于` 页只有 5166 px（§1.9.8） |
 | `build\verify_readme.py` | 跑之前**字节备份**用户配置、报告前恢复（原来跑一次就等于重置用户设置）；新增 `JSON_KEY_OVERRIDES` 声明 `ScrollFollowClickThrough` → `...V2` 这处**有意的**键名不一致（§1.9.6、§1.9.8） |
