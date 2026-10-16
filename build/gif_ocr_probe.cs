@@ -171,6 +171,18 @@ namespace ScreenPen.Probes
             Check(Gif.Encode(two, zero, null, true) != null,
                   "null path returns an error string", "not null");
 
+            // The destination must not be truncated until a complete GIF has
+            // been written. A directory at the destination forces the final
+            // move to fail after the temporary file has been created.
+            string blocked = Path.Combine(outDir, "blocked.gif");
+            Directory.CreateDirectory(blocked);
+            string blockedError = Gif.Encode(two, zero, blocked, true);
+            Check(blockedError != null && Directory.Exists(blocked),
+                  "failed final write leaves the existing destination untouched", blockedError);
+            Check(Directory.GetFiles(outDir, "blocked.gif.*.tmp").Length == 0,
+                  "failed write removes its temporary file", "ok");
+            Directory.Delete(blocked);
+
             // ================================================================
             //  2. byte equality == pixel equality
             // ================================================================

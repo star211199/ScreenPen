@@ -16,6 +16,20 @@ $Build     = Join-Path $Root 'build'
 $Obj       = Join-Path $Build 'obj'
 $Out       = Join-Path $Root 'dist'
 $OutExe    = Join-Path $Out 'ScreenPen.exe'
+# Compile to a staging path and publish only after the compiler succeeds. If
+# csc were pointed straight at dist\ScreenPen.exe, a failed build could leave a
+# half-written or stale binary that looks like a fresh one - the exact trap
+# HANDOVER.md warns about ("编译失败会留下旧 exe").
+$StageExe  = Join-Path $Obj 'ScreenPen.stage.exe'
+
+# Cleanup must never be the thing that fails the build: by the time this runs
+# the interesting error is already in hand, and a missing staging file is the
+# normal case on a first build.
+function Remove-StageQuietly {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    try { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop } catch { }
+}
 
 Write-Host ''
 Write-Host '=== ScreenPen build ===' -ForegroundColor Cyan
@@ -122,7 +136,7 @@ $cscArgs = @(
     '/optimize+',
     '/unsafe-',
     '/codepage:65001',
-    "/out:$OutExe",
+    "/out:$StageExe",
     "/win32icon:$appIco",
     "/win32manifest:$(Join-Path $Build 'app.manifest')",
     "/resource:$appIco,app.ico",
@@ -135,10 +149,26 @@ $cscArgs += $sources
 
 Write-Host ''
 Write-Host '--- compiling ---' -ForegroundColor Cyan
+# No pre-delete of the staging file: csc overwrites its output anyway, and an
+# unconditional Remove-Item on a path that may not exist is a needless way for
+# the script to die before it ever reaches the compiler.
 & $csc $cscArgs
-if ($LASTEXITCODE -ne 0) { throw "compilation failed (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) {
+    Remove-StageQuietly $StageExe
+    throw "compilation failed (exit $LASTEXITCODE); $OutExe was left untouched"
+}
 
-if (-not (Test-Path $OutExe)) { throw 'compiler reported success but produced no EXE' }
+if (-not (Test-Path $StageExe)) { throw 'compiler reported success but produced no EXE' }
+
+# ---- publish ---------------------------------------------------------------
+# Only now does dist\ScreenPen.exe change. A running copy locks the file and
+# Move-Item fails loudly instead of silently shipping the old build.
+try {
+    Move-Item -LiteralPath $StageExe -Destination $OutExe -Force -ErrorAction Stop
+} catch {
+    Remove-StageQuietly $StageExe
+    throw "cannot publish $OutExe (is ScreenPen.exe still running?): $($_.Exception.Message)"
+}
 
 # ---- report ----------------------------------------------------------------
 $size = (Get-Item $OutExe).Length

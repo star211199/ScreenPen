@@ -134,6 +134,7 @@ namespace ScreenPen
             if (pngFrames == null || pngFrames.Count == 0) return "没有可写入的帧";
             if (string.IsNullOrEmpty(path)) return "输出路径为空";
 
+            string tmp = null;
             try
             {
                 GifBitmapEncoder enc = new GifBitmapEncoder();
@@ -175,13 +176,30 @@ namespace ScreenPen
 
                 if (loop) bytes = PatchLoop(bytes);
 
-                using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+                // Write beside the destination so the final rename stays on the
+                // same volume. A failed write/replace leaves any previous GIF
+                // intact instead of truncating it into a corrupt partial file.
+                tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                using (FileStream fs = new FileStream(tmp, FileMode.CreateNew,
+                                                       FileAccess.Write, FileShare.None))
                     fs.Write(bytes, 0, bytes.Length);
+
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+                tmp = null;
                 return null;
             }
             catch (Exception ex)
             {
                 return ex.Message;
+            }
+            finally
+            {
+                if (tmp != null)
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); }
+                    catch { }
+                }
             }
         }
 

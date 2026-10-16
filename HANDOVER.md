@@ -3,18 +3,21 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（**文字识别 OCR + 录制 GIF 动图**，见 §1.7；
-> 上一轮为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
-> + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复，见 §1.6 与 §5.0）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，301,568 bytes（294.5 KB）
-> `sha256 9B27348C408BA5A62D7C490ED3954797A2B9300BC848CC00203A7A315C397B3D`
+> 最后更新：本轮（**构建与写盘健壮性加固**，见 §1.8；
+> 上一轮为文字识别 OCR + 录制 GIF 动图，见 §1.7；
+> 再上一轮为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
+> + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复，见 §1.6 与 §5.2）
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，302,080 bytes（295.0 KB）
+> `sha256 2AC349A1552ABF39F35F924D1AC2B41B6D8965A965321302E9F9654A6B37E2DE`
 > 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（21/21）
 > 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
-> `verify_readme.py` **7/7**（本轮核对 **78 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
+> `verify_readme.py` **7/7**（核对 **78 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
 > `verify_resize.py` **9/9**
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
 > 用**文件体积**和**修改时间**对比 `src\` 最新文件即可。
+> ⚠️ `build\build.ps1` 现在**先编译到暂存路径，成功后才替换 `dist\ScreenPen.exe`**（§1.8.2），
+> 所以"编译失败留下旧 exe"这个陷阱已经被脚本堵住了。
 
 ---
 
@@ -876,6 +879,93 @@ ShareX 花了 **4.5 年**才加上撤销重做（issue #4079），本项一次�
 
 ---
 
+### 1.8 第七轮：构建与写盘健壮性加固（已完成）
+
+本轮**没有改任何用户可见行为**，只修两处"失败时会静默留下错误状态"的地方。
+
+#### 1.8.1 GIF 写盘不再是"先截断再写"（`src\Gif.cs`）
+
+**问题**：`Gif.Encode` 原来是
+```csharp
+using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+    fs.Write(bytes, 0, bytes.Length);
+```
+`FileMode.Create` 会**先把目标文件截断成 0 字节**再写。整个 GIF 在内存里已经编码好了，
+所以唯一的失败窗口就是这一步写盘（磁盘满、目录只读、目标被别的程序占用），
+但一旦在这里失败，磁盘上就留下一个 **0 字节或写了一半的 GIF**——
+而用户在"图片\ScreenPen"里看到的是一个有名字的文件，会以为录成功了。
+
+**改法**：先写同目录的临时文件，全部写完再原子替换。
+```csharp
+tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+using (FileStream fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+    fs.Write(bytes, 0, bytes.Length);
+
+if (File.Exists(path)) File.Replace(tmp, path, null);
+else File.Move(tmp, path);
+tmp = null;
+```
+`finally` 里删除残留的 tmp（成功路径已经把 `tmp` 置 `null`，所以不会误删刚发布的文件）。
+
+**为什么临时文件要和目标同目录**：`File.Replace` / `File.Move` 只在同一卷内是原子的，
+写到 `%TEMP%` 再跨卷搬过去就退化成"复制 + 删除"，等于没修。
+
+**这与 `SettingsStore.Save()` 是同一套模式**（§3.3、§1.5.4 #8），
+现在程序里两处"用户以为存上了"的写盘都已经是原子的。
+
+#### 1.8.2 构建脚本不再可能"留下旧 exe 冒充新构建"（`build\build.ps1`）
+
+**问题**：`csc` 原来直接 `/out:dist\ScreenPen.exe`。§1.7.6 已经记录过这个陷阱的代价：
+一次跨进程验收脚本报 12 个键"回环失败"，查下来是 `dist\ScreenPen.exe` **还是旧的**。
+脚本本身有 `$LASTEXITCODE` 检查，但**手工编译**（HANDOVER §0 里给的那条命令）
+和"编译中途失败"这两种情况下，`dist\ScreenPen.exe` 依然可能是上一次的产物。
+
+**改法**：编译到暂存路径，**只有编译成功才发布**。
+- `/out:build\obj\ScreenPen.stage.exe`
+- 成功后才 `Move-Item -LiteralPath $StageExe -Destination $OutExe -Force`
+- 编译失败 → 清掉暂存文件，抛出的消息里**明确写"`$OutExe` was left untouched"**
+- 发布时目标被占用（`ScreenPen.exe` 还在运行）→ `Move-Item` 抛错，
+  消息提示"is ScreenPen.exe still running?"，**不会**静默发布失败
+
+**顺带修掉的一个自伤**：第一版实现在编译前加了一句
+`Remove-Item $StageExe -ErrorAction SilentlyContinue`，本意是清掉上次的残留。
+实测它会在**暂存文件不存在时**（首次构建的正常情况）抛出终止性错误，
+**导致脚本在调用编译器之前就死掉**——即"失败路径"根本没被走到，
+却因为 `dist\ScreenPen.exe` 恰好没变而看起来像是验证通过了。
+现已删除该预删除（`csc` 本来就会覆盖自己的输出），并把所有清理集中到
+`Remove-StageQuietly`：**清理永远不允许成为让构建失败的原因**。
+
+#### 1.8.3 `run_probes.ps1` 不再硬编码编译器路径
+
+`run_probes.ps1` 原来写死
+`$csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"`，
+而 `build.ps1` 是**动态查找**的。两个脚本会用不同工具链编译，
+且只有 32 位 Framework 的机器上会以一句含糊的"命令不存在"失败。
+现改为与 `build.ps1` 相同的查找顺序（Framework64 → Framework），
+找不到就抛 `No C# compiler (csc.exe) found. Install .NET Framework 4.x.`，
+并打印一行 `compiler : <路径>` 便于比对。
+
+#### 1.8.4 本轮的验证结果
+
+| 项目 | 结果 |
+| --- | --- |
+| `build\run_probes.ps1` | **21/21 PASS**；`gif_ocr_probe` 由 47 项增至 **49/49**（新增 2 条原子写入断言） |
+| 新增断言 | 目标路径被目录占用时 `Encode` 返回错误、**目标本身未被破坏**、且**不残留 `.tmp` 文件** |
+| 构建成功路径 | `sources: 17`，`dist\ScreenPen.exe` **302,080 B**，无暂存残留 |
+| 构建失败路径（实测） | 故意放一个语法错误的 `src\zz_break_test.cs` → 编译器 **exit 1** → 脚本抛出预期消息 → **`dist\ScreenPen.exe` 的 sha256 与 LastWriteTime 均未变化**，且无暂存残留 |
+
+> ⚠️ 构建失败路径是**实测**的，不是推断的——这一点很重要：
+> 1.8.2 里那个自伤（预删除先抛异常）在"只看结果"的验证下**完全看不出来**，
+> 因为原 exe 同样没有变化。**验证失败路径时，必须确认失败真的发生在你打算验证的那一步。**
+> 本次的判据是脚本抛出的消息必须是 `compilation failed (exit 1)`，
+> 而不是任何其他异常。
+
+> `dist\ScreenPen.exe` 的体积和 sha256 每次编译都不同（新的 MVID），
+> 这是 §0 里已经说明过的，不要拿哈希判断是否重新编译过。
+> 本轮体积 **301,568 → 302,080 B**（+512 B），来自 `Gif.Encode` 的临时文件逻辑。
+
+---
+
 ## 2. 待修复的缺陷（TODO）
 
 
@@ -1366,7 +1456,18 @@ Accent   = RGB(232, 160, 0)
 
 > 按**倒序**排列：`5.0` 是本轮，越往后越早。
 
-### 5.0 本轮（文字识别 OCR + 录制 GIF）
+### 5.0 本轮（构建与写盘健壮性加固）
+
+| 文件 | 变更 |
+|---|---|
+| `src\Gif.cs` | `Gif.Encode` 的落盘改为**原子写**：先写 `path + ".<guid>.tmp"`（`FileMode.CreateNew` + `FileShare.None`），再 `File.Replace(tmp, path, null)`（无文件时 `File.Move`）；`finally` 删除残留 tmp。**不再用 `FileMode.Create` 直接截断目标**（§1.8.1） |
+| `build\gif_ocr_probe.cs` | 47 → **49** 项。新增：目标被目录占用时 `Encode` **返回错误**、**目标本身未被破坏**、**不残留 `.tmp`** |
+| `build\build.ps1` | 新增 `$StageExe` + `Remove-StageQuietly`；`/out` 改为暂存路径，**编译成功后才 `Move-Item` 发布到 `dist\ScreenPen.exe`**；失败消息明确写 "`$OutExe` was left untouched"；发布被占用时提示 "is ScreenPen.exe still running?"（§1.8.2） |
+| `build\run_probes.ps1` | 去掉硬编码的 `C:\Windows\Microsoft.NET\Framework64\...\csc.exe`，改为与 `build.ps1` 相同的**动态查找**（Framework64 → Framework），找不到即抛明确错误；新增一行 `compiler : <路径>`（§1.8.3） |
+| `HANDOVER.md` | **§1.8（本轮三条改动 + 验证表）** + 头部版本/体积/sha256 更新 + 本节 |
+| `dist\ScreenPen.exe` | 301,568 → **302,080 B**（重新构建，非手改） |
+
+### 5.1 上一轮（文字识别 OCR + 录制 GIF）
 
 | 文件 | 变更 |
 |---|---|
@@ -1396,7 +1497,7 @@ Accent   = RGB(232, 160, 0)
 > 差点被当成产品 bug。实际是 **`dist\ScreenPen.exe` 还是旧的**——
 > 跨进程验收脚本跑的是**构建产物**，改完源码必须先 `build.ps1` 再跑。
 
-### 5.1 上一轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
+### 5.2 上两轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1422,7 +1523,7 @@ Accent   = RGB(232, 160, 0)
 
 > 本轮**没有**改动的源文件：`src\Program.cs`、`src\Shell.cs`、`src\BrushCursor.cs`、`src\PinForm.cs`。
 
-### 5.1 前一轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
+### 5.3 上三轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
 
 | 文件 | 变更 |
 |---|---|
@@ -1447,7 +1548,7 @@ Accent   = RGB(232, 160, 0)
 
 > 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
 
-### 5.2 前两轮（7 项需求验收 + 两个真实 BUG 修复）
+### 5.4 上四轮（7 项需求验收 + 两个真实 BUG 修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1463,7 +1564,7 @@ Accent   = RGB(232, 160, 0)
 | `README.md` | EXE 体积 229 KB → **230 KB**；新增"程序已在运行时再双击 EXE 会弹出设置窗口"；修正文字标注的按键说明（`Enter` 确认 / `Esc` 取消，原文错写成 `Esc` 确认） |
 | `HANDOVER.md` | 本节 + §2.5 陷阱表 + §4 测试资产清单刷新 |
 
-### 5.3 上上轮（UI 遮挡 / 画笔平滑 / F 跟随）
+### 5.5 上五轮（UI 遮挡 / 画笔平滑 / F 跟随）
 
 | 文件 | 变更 |
 |---|---|
@@ -1478,7 +1579,7 @@ Accent   = RGB(232, 160, 0)
 | `build\measure_ui.cs` | **新增**，缩放后真实几何断言 |
 | `build\render_ui.cs` | **新增**，逐页渲染 PNG 供人眼确认 |
 
-### 5.4 更早（快捷键冲突 UX）
+### 5.6 更早（快捷键冲突 UX）
 
 | 文件 | 变更 |
 |---|---|

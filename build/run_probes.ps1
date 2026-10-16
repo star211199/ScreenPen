@@ -6,7 +6,19 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot\..
 
-$csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+# Discover the compiler the same way build.ps1 does, rather than assuming the
+# 64-bit framework path exists. A machine with only the 32-bit framework would
+# otherwise fail here with an opaque "command not found" instead of a clear
+# message, and the two scripts would silently compile with different toolchains.
+$csc = $null
+foreach ($p in @(
+    (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
+    (Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe'))) {
+  if (Test-Path $p) { $csc = $p; break }
+}
+if (-not $csc) { throw 'No C# compiler (csc.exe) found. Install .NET Framework 4.x.' }
+Write-Host "compiler : $csc" -ForegroundColor DarkGray
+
 $refs = @(
   '/reference:System.dll'
   '/reference:System.Core.dll'
