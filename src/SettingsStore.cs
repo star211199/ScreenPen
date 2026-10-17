@@ -48,6 +48,7 @@ namespace ScreenPen
                 s.WindowShotKey = Json.Str(m, "WindowShotKey", s.WindowShotKey);
                 s.OcrKey = Json.Str(m, "OcrKey", s.OcrKey);
                 s.GifKey = Json.Str(m, "GifKey", s.GifKey);
+                s.CursorSpotKey = Json.Str(m, "CursorSpotKey", s.CursorSpotKey);
 
                 s.PenWidth = Json.Int(m, "PenWidth", s.PenWidth);
                 s.MinPenWidth = Json.Int(m, "MinPenWidth", s.MinPenWidth);
@@ -120,6 +121,21 @@ namespace ScreenPen
                 s.GifSkipIdenticalFrames = Json.Bool(m, "GifSkipIdenticalFrames", s.GifSkipIdenticalFrames);
                 s.GifShowBorder = Json.Bool(m, "GifShowBorder", s.GifShowBorder);
                 s.GifCountdownSeconds = Json.Int(m, "GifCountdownSeconds", s.GifCountdownSeconds);
+
+                s.CursorSpotEnabled = Json.Bool(m, "CursorSpotEnabled", s.CursorSpotEnabled);
+                s.CursorSpotRadius = Json.Int(m, "CursorSpotRadius", s.CursorSpotRadius);
+                s.CursorSpotFillColor = Json.Str(m, "CursorSpotFillColor", s.CursorSpotFillColor);
+                s.CursorSpotFillAlpha = Json.Int(m, "CursorSpotFillAlpha", s.CursorSpotFillAlpha);
+                s.CursorSpotRingColor = Json.Str(m, "CursorSpotRingColor", s.CursorSpotRingColor);
+                s.CursorSpotRingAlpha = Json.Int(m, "CursorSpotRingAlpha", s.CursorSpotRingAlpha);
+                s.CursorSpotRingWidth = Json.Int(m, "CursorSpotRingWidth", s.CursorSpotRingWidth);
+                s.CursorSpotSmoothing = Json.Int(m, "CursorSpotSmoothing", s.CursorSpotSmoothing);
+
+                s.CursorRippleEnabled = Json.Bool(m, "CursorRippleEnabled", s.CursorRippleEnabled);
+                s.CursorRippleSize = Json.Int(m, "CursorRippleSize", s.CursorRippleSize);
+                s.CursorRippleLeftColor = Json.Str(m, "CursorRippleLeftColor", s.CursorRippleLeftColor);
+                s.CursorRippleMiddleColor = Json.Str(m, "CursorRippleMiddleColor", s.CursorRippleMiddleColor);
+                s.CursorRippleRightColor = Json.Str(m, "CursorRippleRightColor", s.CursorRippleRightColor);
             }
             catch
             {
@@ -177,6 +193,7 @@ namespace ScreenPen
                 S("WindowShotKey", s.WindowShotKey);
                 S("OcrKey", s.OcrKey);
                 S("GifKey", s.GifKey);
+                S("CursorSpotKey", s.CursorSpotKey);
                 I("HighlighterAlpha", s.HighlighterAlpha);
                 I("ArrowStyleIndex", s.ArrowStyleIndex);
                 F("StepBadgeSize", s.StepBadgeSize);
@@ -238,6 +255,21 @@ namespace ScreenPen
                 B("ScrollFollowEnabled", s.ScrollFollowEnabled);
                 B("WheelScrollsDocument", s.WheelScrollsDocument);
                 B("ScrollFollowClickThroughV2", s.ScrollFollowClickThrough);
+
+                B("CursorSpotEnabled", s.CursorSpotEnabled);
+                I("CursorSpotRadius", s.CursorSpotRadius);
+                S("CursorSpotFillColor", s.CursorSpotFillColor);
+                I("CursorSpotFillAlpha", s.CursorSpotFillAlpha);
+                S("CursorSpotRingColor", s.CursorSpotRingColor);
+                I("CursorSpotRingAlpha", s.CursorSpotRingAlpha);
+                I("CursorSpotRingWidth", s.CursorSpotRingWidth);
+                I("CursorSpotSmoothing", s.CursorSpotSmoothing);
+
+                B("CursorRippleEnabled", s.CursorRippleEnabled);
+                I("CursorRippleSize", s.CursorRippleSize);
+                S("CursorRippleLeftColor", s.CursorRippleLeftColor);
+                S("CursorRippleMiddleColor", s.CursorRippleMiddleColor);
+                S("CursorRippleRightColor", s.CursorRippleRightColor);
 
                 sb.AppendLine(string.Join("," + Environment.NewLine, lines.ToArray()));
                 sb.AppendLine("}");

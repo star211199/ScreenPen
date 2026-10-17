@@ -3,24 +3,26 @@
 > 面向后续接手优化的 agent。本文档描述**当前代码的真实状态**、**已确认的缺陷根因**、
 > **每个问题的定位坐标**，以及**验收标准**。
 >
-> 最后更新：本轮（**四个交互缺陷修复**：工具条加 OCR/GIF 入口、选区可移动缩放、
-> GIF 结果窗口、滚轮穿透与 Esc 停止录制，见 §1.9；
-> 上一轮为构建与写盘健壮性加固，见 §1.8；
-> 再上一轮为文字识别 OCR + 录制 GIF 动图，见 §1.7；
-> 更早为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
+> 最后更新：本轮（**鼠标浮标**：指针旁的半透明圆圈 + 点击涟漪，见 §1.10；
+> 上一轮为四个交互缺陷修复（工具条加 OCR/GIF 入口、选区可移动缩放、
+> GIF 结果窗口、滚轮穿透与 Esc 停止录制），见 §1.9；
+> 再上一轮为构建与写盘健壮性加固，见 §1.8；
+> 更早为文字识别 OCR + 录制 GIF 动图，见 §1.7；
+> 再更早为第一梯队四个功能（荧光笔 / 序号 / 箭头三样式 / 撤销重做）
 > + 窗口截图 + 屏幕取色器 + 截图美化 + UI 打磨 + 高 DPI 卡片空白修复，见 §1.6 与 §5.2）
-> 当前构建：`ScreenPen\dist\ScreenPen.exe`，314,880 bytes（307.5 KB）
-> `sha256 856EE6F11A612E288BAD61F801D438A0D6D1E3EFA98CCD246712DD682C7E6763`
-> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（22/22）
-> 单跑一个探针：`build\run_probes.ps1 -Only ux_fix_probe`
-> 视觉诊断：`build\run_render.ps1 render_pin` → `build\shots\render\*.png`（给人眼看，不做断言）
-> 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **81/81**、
-> `verify_readme.py` **7/7**（核对 **78 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
-> `verify_resize.py` **9/9**
+> 当前构建：`ScreenPen\dist\ScreenPen.exe`，335,360 bytes（327.5 KB）
+> `sha256 A6F53F4C6D925294A3905297B9A1CEA1EE77BB5749E4D90521790D31CCA38225`
+> 全套探针：`build\run_probes.ps1` → **ALL PROBES PASSED**（23/23）
+> 单跑一个探针：`build\run_probes.ps1 -Only cursor_probe`
+> 视觉诊断：`build\run_render.ps1 render_cursor` → `build\shots\render\5*_cursor_*.png`（给人眼看，不做断言）
+> 跨进程验收：`verify_upgrade.py` **26/26**、`verify_hotkeys.py` **20/20**、`verify_ui.py` **98/98**、
+> `verify_readme.py` **7/7**（核对 **92 键**）、`e2e_test.py` **27/27**、`check_tray.py` **6/6**、
+> `verify_resize.py` **9/9**、`verify_cursor_live.py` **7/7**（浮标真的画在真实桌面上）
 >
 > ⚠️ `verify_ui.py` 读的是 `capture_ui.py` **先前截好的 PNG**，不会自己截图。
-> 只改代码不重跑 `capture_ui.py`，`verify_ui.py` 会拿旧图给你一个**毫无意义的 81/81**。
-> 顺序必须是 `capture_ui.py` → `verify_ui.py`。
+> 只改代码不重跑 `capture_ui.py`，`verify_ui.py` 会拿旧图给你一个**毫无意义的满分**。
+> 顺序必须是 `capture_ui.py` → `verify_ui.py`。`capture_ui.py` 现在会**先清空
+> `build\shots\*.png`**，所以页面增删后不会留下上一套编号的旧图被当成新图校验。
 >
 > 注：每次 csc 编译都会生成新的 MVID，所以 **sha256 每次都不同**，不要用它判断是否重新编译过；
 > 用**文件体积**和**修改时间**对比 `src\` 最新文件即可。
@@ -42,16 +44,16 @@ cd ScreenPen
 - **C# 5 语法上限**（旧 csc）：禁止字符串插值 `$"..."`、表达式体成员 `=>`、`nameof`、`?.`、
   局部函数、自动属性初始化器。用 `delegate`、`string.Format`、传统属性。`var`/lambda/匿名类型/对象初始化器可用。
 - 重新编译前**必须先删除**目标 exe（文件被占用会报 CS0016）。
-- 源码**恰好 19 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
+- 源码**恰好 20 个文件**：`src\` 下的 `Shell.cs`、`Program.cs`、`Native.cs`、`Config.cs`、
   `SettingsStore.cs`、`RegionSelectForm.cs`、`PinForm.cs`、`AppContext2.cs`、`BrushCursor.cs`、
   `SettingsForm.cs`、`OverlayForm.cs`、`Beautifier.cs`、`ColorPickerForm.cs`、
-  `Gif.cs`、`GifRecorder.cs`、`GifResultForm.cs`、`KeyboardHook.cs`、
+  `Gif.cs`、`GifRecorder.cs`、`GifResultForm.cs`、`KeyboardHook.cs`、`CursorSpot.cs`、
   `Ocr.cs`、`OcrResultForm.cs`。**没有 `HotkeyBox.cs`**
   （`HotkeyBox` 是 `SettingsForm.cs` 内的私有嵌套类）。
   > ⚠️ `build\run_probes.ps1` 与 `build\build.ps1` 的源码列表里**已经有 `src\PinForm.cs`**；
   > 手工编译时漏掉它会在 `AppContext2.cs` 上得到 CS0246（找不到 `PinForm`）。
-  > 手工编译还要带上 `src\GifResultForm.cs` 与 `src\KeyboardHook.cs`，
-  > 否则 `AppContext2.cs` 会报找不到 `GifResultForm` / `KeyboardHook`。
+  > 手工编译还要带上 `src\GifResultForm.cs`、`src\KeyboardHook.cs` 与 `src\CursorSpot.cs`，
+  > 否则 `AppContext2.cs` 会报找不到 `GifResultForm` / `KeyboardHook` / `CursorSpotOverlay`。
   > ⚠️ `Gif.cs` / `GifRecorder.cs` 用了 WPF 的 `System.Windows.Media.Imaging`，
   > 手工编译**必须**加三个引用，且 `WindowsBase.dll` 在 `WPF\` 子目录、`System.Xaml.dll`
   > 在 Framework64 根目录（写反会得到 CS0006）：
@@ -60,7 +62,7 @@ cd ScreenPen
 
 ### 测试
 
-**首选：一条命令跑完全部 22 个进程内探针**（编译 + 运行 + 汇总）：
+**首选：一条命令跑完全部 23 个进程内探针**（编译 + 运行 + 汇总）：
 
 ```powershell
 cd ScreenPen
@@ -997,6 +999,7 @@ tmp = null;
 本轮**新增 2 个源文件、1 个探针**，改写了 `RegionSelectForm` 的工具条与选区几何，
 并推翻了 §1.7.1 里"工具条必须恰好 4 个按钮"的设计约束。
 
+
 #### 1.9.1 工具条 4 → 6 个按钮，且以后再加不用动布局
 
 **问题**：OCR / GIF 只能靠快捷键触发（§1.7.1 的设计），工具条上没有任何入口，
@@ -1233,6 +1236,162 @@ _wheelRestoreTimer.Stop(); _wheelRestoreTimer.Start();      // 180ms 后撤销
 `ScrollFollowClickThrough`，落盘键叫 `ScrollFollowClickThroughV2`（§1.9.6）。
 脚本里加了 `JSON_KEY_OVERRIDES` 显式声明这件事，否则它会把这个**故意的**别名
 报成"文档写了程序不存在的键"。
+
+---
+
+### 1.10 第九轮：鼠标浮标（指针半透明圆圈 + 点击涟漪）
+
+用户需求原文：*"参考 https://github.com/cuiliang/ClickShow 这个项目，在我这款 ScreenPen
+软件的基础上增加一个浮标的功能，就是在鼠标的周围有一个半透明的圆圈，属性可以手动调节"*。
+
+新增 `src\CursorSpot.cs`（约 760 行）+ `Settings → 浮标` 页 + `Ctrl+Alt+H` + 托盘勾选项。
+
+#### 1.10.1 为什么是**两个**分层窗口，而不是一个全屏窗口
+
+| 窗口 | 尺寸 | 理由 |
+|---|---|---|
+| `SpotWindow` | 约 `2*(半径+描边)` 见方，几十 KB | 每 15ms 重新居中一次。**必须小**：整块表面每帧都要清空重画再上传，全屏表面在这个频率下光内存带宽就吃满了 |
+| `RippleWindow` | 当前所有涟漪的**并集**，只在有涟漪时显示 | 涟漪必须**留在点击的位置**，而指针会走开——它不能跟着指针移动，所以不能塞进 `SpotWindow` |
+
+两个窗口都是 `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`：
+
+- `LAYERED`：`UpdateLayeredWindow` 的**硬性前提**，没有它调用直接失败；
+- `TRANSPARENT`：圆圈正好画在用户点击的地方，没有它**每一次点圆内都会点到我们自己**；
+- `NOACTIVATE`：不能把焦点从被演示的程序手里抢走。
+
+`LayeredForm` 是两者的共同基类，`ShowWithoutActivation = true`，并且
+`OnPaint` / `OnPaintBackground` 都是空的——像素全部由 `UpdateLayeredWindow` 提供，
+GDI 再画一遍只会互相打架并闪烁。
+
+#### 1.10.2 半透明只能走 `UpdateLayeredWindow`
+
+试过但**不行**的两条路：
+
+- `Form.Opacity`：整窗统一透明度，描边和填充会被一起压淡，调不出"实心描边 + 半透明填充"；
+- `BackColor = Color.Transparent` + 分层色键：只能做**全有或全无**的透明，做不出 0~255。
+
+所以表面用 `PixelFormat.Format32bppPArgb`：GDI+ 在这个格式下**自己维护预乘 alpha**，
+正好是 `AC_SRC_ALPHA` 要求的格式。用 `Format32bppArgb` 直接喂给
+`UpdateLayeredWindow` 会得到偏亮的边缘（暗色描边变灰）。
+
+`Native.UpdateLayeredBitmap` 用 `GetHbitmap(Color.FromArgb(0))` 取位图句柄——
+**必须传一个透明背景色**，否则 GDI+ 会把 alpha 通道丢掉。
+
+#### 1.10.3 圆圈不能出现在**我们自己的**截图里
+
+这是本轮最容易漏的一条：圆圈是真实的分层窗口，而
+`Native.CaptureRegion` 的 `BitBlt` **故意带了 `CAPTUREBLT`**（为了能抓到分层窗口），
+所以它会把圆圈一起抓进去——截图、GIF 帧、取色器底图、框选底图**全都会带上一个黄圈**。
+
+改法：`Native.CaptureGuard`（`Action<bool>`，在 `CaptureRegion` 里进出各调一次）。
+`CursorSpotOverlay` 在构造时把自己挂上去，进入时隐藏两个窗口并
+`Native.FlushComposition()`（`DwmFlush`）。
+
+> **`DwmFlush` 不是可选的**：`ShowWindow(SW_HIDE)` 在窗口管理器里是同步的，但
+> `GetDC(NULL)` 读到的桌面表面**落后一帧合成**。不 flush 的话，圆圈会出现在
+> "刚刚为它隐藏"的那张截图里——隐藏了个寂寞。
+
+**为什么 GIF 录制要整段 Suspend 而不是每帧靠 guard**：10 帧/秒的话，每帧都会
+"隐藏 → DwmFlush → 抓屏 → 显示"，圆圈会以 10Hz 闪烁，而且每帧多花一个刷新间隔。
+`Suspend()` / `Resume()` 是**可嵌套的深度计数**，正好支持"整段录制 + 帧内抓屏"两层。
+
+#### 1.10.4 探针抓到的一个真 bug：截图之后圆圈再也不回来
+
+第一版 `OnCaptureGuard(false)` 只做了 `_suspends--; if (0) Sync();`。
+但 `Sync()` 走的是 `StartInternal()`，而循环**一直在跑**（`_running == true`），
+所以它**立刻 return**——什么都没重画。
+
+而 `Tick()` 的重绘条件是 `_spotDirty || 位置变了`。圆圈刚被 `HideSpot()` 藏起来，
+位置没变、dirty 是 false，于是**下一次 tick 什么也不做**：
+圆圈在第一次截图之后就永久消失了，直到用户移动鼠标。
+
+> 这个 bug 只在"已经显示 → 抓屏 → 不动鼠标"时出现，人眼很难稳定复现，
+> 但 `cursor_probe` 的"…and it comes back afterwards"一跑就红。
+
+修法：`_suspends` 归零时**先把 `_spotDirty = true` 再 Sync()**。
+教训与 §1.9.8 同一类：**"隐藏"不等于"停止"**，恢复路径必须显式请求重绘，
+不能指望下一次 tick 自己发现。
+
+#### 1.10.5 设置页的实时预览（`SpotPreviewChanged`）
+
+如果只在"保存设置"之后才生效，用户就是在**调一个看不见的圈**：功能默认关闭，
+而设置对话框是模态的。所以 `SettingsForm` 每改一项就调
+`SpotPreviewChanged(_draft)`，`AppContext2` 把它接到 `_spot.BeginPreview(draft)`。
+
+- `BeginPreview` 让 `SpotOn` **无视** `CursorSpotEnabled`（`_preview != null` 就画），
+  所以功能关着也能边拖滑杆边看；
+- 点"取消"或保存后 `EndPreview()` 回到 `_cfg`，**取消就是真的恢复原样**；
+- 预览用的是 `_draft`（对话框的克隆），**不会污染** `_cfg`。
+
+事件挂在 `AttachSpotEvents()` 里一次性接好，而不是每个控件各写一遍：
+以后加一个滑杆只需要在那一处补一行，不会出现"新控件没接预览、看着没反应"。
+
+#### 1.10.6 平滑用时间常数，不是每帧固定比例
+
+`EaseFactor(smoothing, dtSeconds) = 1 - exp(-dt / tau)`，`tau = smoothing/100 * 0.35`。
+用每帧固定比例（`x += (target-x)*0.3`）的话，掉帧时圆圈会明显变"钝"，
+而这台机器上掉帧是常态。`smoothing == 0` 直接返回 `1f`（紧贴指针），
+这样默认值在数学上就是"完全跟随"，而不是"很接近"。
+
+`dtMs` 会被钳到 `[1, 250]`：休眠唤醒或调试器暂停后 `Environment.TickCount` 的
+差值可能是几十秒，不钳的话圆圈会瞬移。
+
+#### 1.10.7 本轮验证结果
+
+| 项目 | 结果 |
+|---|---|
+| `build\run_probes.ps1` | **23/23 PASS** |
+| `cursor_probe`（新增） | **84 `[PASS]` / 0 `[FAIL]`** |
+| `hotkey_conflict_probe` | 29 → **30/30**（见 §1.10.8） |
+| `verify_ui.py` | 81 → **98/98**（7 个页面） |
+| `verify_readme.py` | **7/7**（78 → **92 键**） |
+| `e2e_test.py` / `verify_upgrade.py` / `verify_hotkeys.py` / `check_tray.py` / `verify_resize.py` | **27/27** / **26/26** / **20/20** / **6/6** / **9/9** |
+| `verify_cursor_live.py`（新增） | **7/7** —— 真机抓屏看到圆圈、半透明、描边在半径处、圈外无变化 |
+| 构建 | `sources: 20`，`dist\ScreenPen.exe` **335,360 B**，`sha256 A6F53F4C…` |
+
+`cursor_probe` 里值得单独说的几条断言：
+
+- **从真实 HWND 读 ex-style**（`GetWindowLongPtr(GWL_EXSTYLE)`），而不是相信
+  `CreateParams` 覆写被正确采纳了；
+- **按像素验圆**：中心 alpha ≈ 填充值、半径处是描边、四角全 0、
+  填充 alpha 0 时中心为空而描边仍在、`描边宽 0 + 填充 0` 时整张表面全透明；
+- **截图期间圆圈确实不在屏上**：把自己的委托套在 `Native.CaptureGuard` **外层**，
+  在 `original(entering)` **之后**读 `SpotVisibleForTest`——顺序反了就测不到东西；
+- **涟漪是环不是盘**：中心 alpha 必须为 0；
+- 设置文件在探针自己 exe 旁边（`Settings.SettingsPath()` 基于 `ExePath()`），
+  所以**碰不到用户的真实配置**，跑完还会删掉。
+
+#### 1.10.8 第四个"测试在骗自己"：控件树只包含当前页
+
+加完 `浮标` 页的快捷键行之后，`hotkey_conflict_probe` 报
+`key boxes found: 26 / bindings registered: 27`。
+
+原因不是漏注册，而是 `SettingsForm.ShowPage()` **有意把非当前页从 `_content` 里摘掉**
+（它们都是 `Dock=Fill` 的兄弟，不摘会互相覆盖）。探针的 `KeyBoxes()` 递归遍历
+`form.Controls`，于是**只能看到当前显示的那一页**。
+
+它以前一直是对的，纯属巧合——**所有快捷键行刚好都在 `快捷键` 页上**。
+一旦有一行搬到别的页，这条断言量的就不再是"每一行都注册了"，而是
+"当前这一页的每一行都注册了"，**它守护的不变式已经悄悄变了**。
+
+修法：`KeyBoxes()` 除了走控件树，还走 `_pages` 字典里的每个页面面板。
+修完 27 = 27。
+
+> 这是本轮第二个"探针的输入不是它以为的输入"（第一个是 §1.10.4）。
+> 判断一个断言是否还有效，要看**它的遍历范围是否覆盖了它声称的范围**，
+> 而不是看它是否 PASS。
+
+#### 1.10.9 第五个坑：按 96-DPI 的数值去量 200% 的屏幕
+
+`verify_cursor_live.py` 第一版写死了「在圆心右侧 60px 取样应该打到描边」，结果取到的是 `(255,135,135)`——**圆内部**的颜色。
+
+原因不是程序错了：`CursorSpotRadius = 60` 是**96-DPI 授权值**，`Scale()` 会乘上当前显示器的 `DpiX/96`，本机 200% 下真实半径是 **120 物理像素**。按 60 取样自然还在圈里；而且 `out = 90` 也在圈内，于是「圈外不该有变化」也一起失败。
+
+修法：先 `GetDpiForSystem()`，把**每一个取样点**都乘上同一个 scale。
+顺带把描边色从白色改成**纯蓝**：白色描边在浅色背景上「通过了」也说明不了任何事——它和背景一模一样，圆环丢了照样绿。
+
+> 这条和 §1.9.8 的标题栏问题是同一类：**取样坐标的参照系错了**。
+> 在 200% DPI 的机器上写死像素值，几乎一定是在量错地方。
 
 ---
 
@@ -1682,15 +1841,16 @@ Accent   = RGB(232, 160, 0)
 
 | 文件 | 类型 | 上次结果 | 说明 |
 |---|---|---|---|
-| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (22/22)** | 编译并运行下面 22 个进程内探针，逐个打印 PASS/FAIL。**源码列表已含 18 个 `.cs`**，并且会自动追加 3 个 WPF 引用（`Gif.cs`/`GifRecorder.cs` 需要）。支持 `-Only <名字>` 单跑 |
+| **`build\run_probes.ps1`** | **总入口** | **ALL PROBES PASSED (23/23)** | 编译并运行下面 23 个进程内探针，逐个打印 PASS/FAIL。**源码列表已含 20 个 `.cs`**，并且会自动追加 3 个 WPF 引用（`Gif.cs`/`GifRecorder.cs` 需要）。支持 `-Only <名字>` 单跑 |
 | `build\ux_fix_probe.cs` | 进程内 | **ALL UX FIX CHECKS PASSED** | **本轮新增**：四个反馈问题的回归。① 工具条 6 按钮 / 顺序 / 点击落点；② 选区移动 + 8 把手缩放 + 逐边锚定 + 出屏钳制 + 小选区隐藏把手；③ `GifResultForm` 路径可见 / 帧数时长体积 / 复制按钮 / 各种宽度下路径框不出窗 / 空路径不崩；④ 滚轮穿透决策 + `WS_EX_TRANSPARENT` 真置真撤 + 前后 ex-style 逐位相同 + `ScrollFollowClickThrough` 跟随期穿透与退出恢复；⑤ **真实按键**验证 `Esc` 钩子（`keybd_event` 注入 + 泵消息） |
+| `build\cursor_probe.cs` | 进程内 | **84 `[PASS]` / 0 `[FAIL]`** | **本轮新增**：① `EaseFactor` 单调、0 值等于 1、时间基（dt 加倍则收敛更多）、越界钳制；② 圆的像素（中心 alpha≈填充值 / 半径处是描边 / 四角全 0 / 填充 0 只剩描边 / 描边 0+填充 0 全透明 / 半径变大窗口跟着变大）；③ **从真实 HWND 读 `GWL_EXSTYLE`** 验证 `LAYERED`/`TRANSPARENT`/`NOACTIVATE`；④ 开关、**嵌套 Suspend/Resume**（含多发一次 Resume 不下溢）、`BeginPreview`/`EndPreview` 用草稿值；⑤ 把委托套在 `Native.CaptureGuard` **外层**，在 `original(entering)` **之后**读可见性，证明抓屏时圆圈不在屏上、抓完会回来；⑥ 涟漪是**环不是盘**（中心 alpha 0）、窗口居中在点击点、过期被丢弃；⑦ 14 个新键落盘回环 + 钳制；⑧ 设置页双向绑定 + 预览回调 + 控制器托盘勾选/落盘 |
 | `build\gif_delta_probe.cs` | 进程内 | **6/6 PASS** | **本轮新增**：GIF 字节级回填。**第一块的偏移量是 13**（6 字节签名 + 7 字节逻辑屏幕描述符），延时要能被独立解码器读回 |
 | `build\gif_ocr_probe.cs` | 进程内 | **49/49 PASS** | **第七轮新增**：GIF（延时 / 循环块 / 合并帧 / 上限 / 原子写盘）+ OCR（识别 / 放大 / 坐标换算 / 语言标签 / 工作线程超时 / `RawText` 兜底）。**探针必须先 `SetProcessDpiAwarenessContext(-4)` 并把测试字体用 `GraphicsUnit.Pixel` 建**，否则 200% DPI 下文字被裁、OCR 必然空手而归 |
 | `build\gif_recorder_probe.cs` | 进程内 | **29/29 PASS** | **第七轮新增**：录制真的在采样（驱动一个会动的 `Form`，静止桌面会合并成 1 帧而假失败）、写出的帧数与解码数一致、帧尺寸等于选区、时长上限、取消、倒计时、极小区域拒绝、**红框没被烤进画面** |
 | `build\ocr_gif_wiring_probe.cs` | 进程内 | **64/64 PASS** | **第七轮新增，第八轮扩写**：接线正确性。`RegionAction` 0/1/2/3 **取值不变**、工具条有**全部 6 个按钮**（按 `ToolbarButtonCountForTest` 遍历，不再写死四个具名矩形）、点 `识别`/`GIF` 按钮落到与快捷键相同的动作、`O`/`G` 选中新动作而 **`Ctrl+O`/`Ctrl+G` 仍空闲**、原有 `P`/`Ctrl+C`/`Enter`/`Esc` 都没坏、10 个默认热键互不重复、`OcrResultForm` 显示文本、设置窗口读写 + 落盘回环、越界值 `Clamp` |
 
 | `build\tier1_probe.cs` | 进程内 | **78 PASS / 0 FAIL** | **本轮新增**：第一梯队四项功能。9 组：枚举与笔画、撤销重做（多级 + 序号回收）、序号徽标编号、荧光笔（**alpha 独立性**：改透明度不影响其它笔画）、箭头三样式（**按像素差**断言三种样式几何确实不同）、窗口几何（DWM 物理边界）、`PixelAt`、美化器（圆角不泄漏内容用 `BeautifyRadius=0` 差分验证）、设置回环 |
-| `build\layout_cards.cs` | 进程内 | **21 PASS / 0 FAIL** | **本轮新增**：卡片布局健全性。① 每个控件四面都在自己的卡内；② 卡片互不重叠；③ 卡片内容下方无 >40px 空白；④ 溢出页的 `AutoScrollMinSize` 能滚到最后一卡。**这是"卡片底部大片空白"的回归防线** |
+| `build\layout_cards.cs` | 进程内 | **24 PASS / 0 FAIL** | **本轮新增**：卡片布局健全性。① 每个控件四面都在自己的卡内；② 卡片互不重叠；③ 卡片内容下方无 >40px 空白；④ 溢出页的 `AutoScrollMinSize` 能滚到最后一卡。**这是"卡片底部大片空白"的回归防线** |
 | `build\hotkey_conflict_probe.cs` | 进程内 | **30/30 PASS** | 快捷键冲突 UX（含 `PromptOverride`）。**本轮改法**：键行数不再硬编码，改为与窗体自己的 `_bindings` 集合比数量 |
 | `build\region_probe.cs` | 进程内 | **PASS** | 区域截图、裁剪、剪贴板、保存、取消 |
 | `build\follow_probe.cs` | 进程内 | **26 `[PASS]` / 0 `[FAIL]`** | 滚动跟随（算法层 + F 集成层 + 滚轮路由 + 空闲退出 + 拒绝理由） |
@@ -1715,12 +1875,13 @@ Accent   = RGB(232, 160, 0)
 | `build\gif_probe.cs` | 可行性 | **7 passed / 0 failed** | 用 WPF 编码器写出 30 帧 800×600 动画 GIF（61 KB，约 2 KB/帧），**零外部依赖**——不需要 ffmpeg（省掉 ~70 MB 和 LGPL/GPL 许可问题；`gifski` 是 AGPL-3.0-or-later，MP4 路线已排除） |
 | `build\verify_hotkeys.py` | 跨进程 E2E | **20/20 PASS** | 快捷键重绑 + 冲突保存 + 读回校验 |
 | `build\verify_brush.py` | 跨进程 | **17/17 PASS** | 画笔光标 |
-| `build\verify_ui.py` | 跨进程 | **81/81 PASS** | UI 结构（**平铺 glob `build\shots\*.png`，别在里面留临时图**） |
+| `build\verify_ui.py` | 跨进程 | **98/98 PASS** | UI 结构（7 个页面；**平铺 glob `build\shots\*.png`，别在里面留临时图**） |
 | `build\e2e_test.py` | 跨进程 | **27/27 PASS** | 端到端（跑得慢，约 3–5 分钟，不要误判为卡死） |
 | `build\check_tray.py` | 跨进程 | **6/6 PASS, exit 0** | 托盘图标注册（`Shell_NotifyIconGetRect` + 负向对照） |
 | `build\verify_readme.py` | 跨进程 | **7/7 PASS** | README 一致性（**会改写 `dist\ScreenPen.settings.json`，前后要快照/还原**） |
 | `build\verify_upgrade.py` | 跨进程 | **26/26 PASS** | 上上轮 7 项需求的综合验收 |
 | `build\verify_resize.py` | 跨进程 | **ALL RESIZE CHECKS PASSED**（9 项） | **本轮新增**：设置窗口可调整大小。对真实 `dist\ScreenPen.exe` 断言 `WS_THICKFRAME` / `WS_MAXIMIZEBOX`、放大生效、缩小被下限夹住、页脚按钮在放大后/最小时都在窗内且不溢出、设计尺寸可复原（±2px） |
+| `build\verify_cursor_live.py` | 跨进程 | **7/7 PASS** | **本轮新增**：浮标**真的画在真实桌面上**。在进程内探针之外补上最后一段：`UpdateLayeredWindow` 失败时表面断言会全绿而屏幕什么都没有。做法是临时改配置 → 启动 `dist\ScreenPen.exe` → `SetCursorPos` → **用本进程的 GDI BitBlt 抓屏**（**故意不带 `CAPTUREBLT`**，也**不能**走程序自己的捕获路径，那条路会先把圆圈藏起来）。断言：圆心被填充色染色、圆心 ≠ 背景也 ≠ 纯填充色（证明 alpha 真的生效）、半径处是描边色、1.45 倍半径外与关闭时逐像素相同、关掉后圆圈消失。**按 `GetDpiForSystem()` 缩放所有取样点**——本机 200% 下 `半径 60` 实际是 120 物理像素，第一版按 60 取样量到了圆内部。跑完还原配置与鼠标位置 |
 | `build\diag_save_pipeline.py` | 诊断 | PASS | 证明 `WM_SETTEXT` + `BM_CLICK` 真的驱动保存链路 |
 | `build\diag_gettext.py` | 诊断 | PASS | 证明 `GetWindowTextW` 跨进程是陈旧缓存、`WM_GETTEXT` 才是实时值 |
 | `build\diag_texture_scan.py` | 诊断 | — | 扫描桌面找有纹理的区域（测马赛克用） |
@@ -1746,7 +1907,28 @@ Accent   = RGB(232, 160, 0)
 
 > 按**倒序**排列：`5.0` 是本轮，越往后越早。
 
-### 5.0 本轮（四个交互缺陷修复）
+### 5.0 本轮（鼠标浮标）
+
+| 文件 | 变更 |
+|---|---|
+| `src\CursorSpot.cs` | **新增（第 20 个源文件，约 760 行）**。`CursorSpotOverlay`（跟随循环 / `EaseFactor` / 涟漪 / 嵌套 `Suspend` / `BeginPreview` / 截图守卫）+ `LayeredForm`（`UpdateLayeredWindow` 基类，`LAYERED\|TRANSPARENT\|NOACTIVATE`）+ `SpotWindow`（指针圆，`2*(r+w/2)+2` 见方）+ `RippleWindow`（涟漪并集窗口）+ `Ripple` / `RippleDraw`（§1.10.1–§1.10.6） |
+| `src\Native.cs` | 新增 `UpdateLayeredBitmap`（`GetHbitmap` 必须传透明背景色）、`IsMouseButtonDown`（`GetAsyncKeyState`）、`VK_LBUTTON` / `VK_RBUTTON` / `VK_MBUTTON`、`FlushComposition`（`DwmFlush`）、`CaptureGuard`（`Action<bool>`，在 `CaptureRegion` 进出各调一次）（§1.10.3） |
+| `src\Config.cs` | 新增 14 个键：`CursorSpotKey`（`Ctrl+Alt+H`）+ `CursorSpotEnabled/Radius/RingWidth/Smoothing/FillColor/FillAlpha/RingColor/RingAlpha` + `CursorRippleEnabled/Size/LeftColor/RightColor/MiddleColor`；`Clamp()` 补半径 6~400、描边 0~24、alpha 0~255、平滑 0~90、涟漪 40~600 与三个色号校验；空白 `CursorSpotKey` 回落默认值 |
+| `src\SettingsStore.cs` | 14 个新键的读写（`S` / `B` / `I` 三个 helper，与既有键同一套写法） |
+| `src\SettingsForm.cs` | 新增 **`浮标` 页**（`BuildSpotPage` / `CollectSpotDraft` / `PushSpotPreview` / `AttachSpotEvents`）：半径滑杆+数字框互相同步、描边宽度、跟随平滑、填充/描边颜色按钮与不透明度、涟漪开关+直径+三键颜色、全局快捷键行；`AddNav` 6 → 7 页；新增 `public Action<Settings> SpotPreviewChanged`（**每改一项就在桌面上生效**）；`LoadDraftIntoControls` / `OnSave` 双向绑定；测试缝 `Spot*ForTest` / `SetSpot*ForTest` / `HasPageForTest` / `NavCountForTest` / `DraftForTest` |
+| `src\AppContext2.cs` | `HK_SPOT = 11`；`_spot` 字段在构造里**无条件创建**（它顺带装上截图守卫）；托盘新增可勾选项 **鼠标浮标（指针旁的半透明圆圈）**（`_spotItem`）；`ToggleCursorSpot(fromTray)`（改 `_cfg` → `ApplySettings` → 勾选状态 → 落盘，热键路径额外弹气泡）；`SuspendSpot` / `ResumeSpot` 接在**框选、取色（含 `finally`）、GIF 录制**三处；`OpenSettings` 里挂 `SpotPreviewChanged` → `BeginPreview`，`ShowDialog` 返回后**无论确定还是取消都先 `EndPreview`**；`Quit` / `Dispose` 释放 |
+| `build\cursor_probe.cs` | **新增，84 条断言 / 8 个小节**（§1.10.7） |
+| `build\hotkey_conflict_probe.cs` | `KeyBoxes()` 除了走控件树还走 `_pages` 字典——`ShowPage()` 会把非当前页从 `_content` 摘掉，原来只能看到当前页（§1.10.8） |
+| `build\run_probes.ps1` | `$srcs` 加 `CursorSpot.cs`；`$probes` 加 `cursor_probe` |
+| `build\run_render.ps1` | 用法注释补 `render_cursor` |
+| `build\render_cursor.cs` | **新增**。把 `SpotSurfaceForTest` / `RippleSurfaceForTest` 直接合成到一张合成"文档"底图上（`50_cursor_spot.png` 四种参数 / `51_cursor_ripple.png` 涟漪三个时刻）。**不用截屏**：分层窗口的内容就是那块表面，截屏反而会被"当时桌面是什么"干扰 |
+| `build\capture_ui.py` | `NAV_LABELS` / `SHOT_NAMES` 6 → 7（插入 `浮标`）；**开头先清空 `build\shots\*.png`**——页面编号一变，旧编号的 PNG 会被 `verify_ui.py` 当成新图校验（§1.9.8 那个坑的同类） |
+| `build\verify_ui.py` | 注释里的"六个页面"改七 |
+| `README.md` | 新增 **§八、鼠标浮标**（参数表 + 涟漪 + 六条实用细节）；章节 八~十五 → 九~十六；快捷键表加 `Ctrl+Alt+H`；设置页表加 `浮标` 行；配置样例加 14 键（78 → **92**）；源码表加 `CursorSpot.cs`（19 → **20**）；探针表加 `cursor_probe`、总数 21 → **23**；修正两处**本来就有误**的"见第六节"（设置页其实是第八节） |
+| `HANDOVER.md` | **§1.10（八个根因/设计说明 + 验证表）**、§0 源码数 19 → 20、§4 探针表、§5 重排并新增本节、头部版本/体积/sha256 更新 |
+| `dist\ScreenPen.exe` | 314,880 → **335,360 B**（重新构建，非手改） |
+
+### 5.1 上一轮（四个交互缺陷修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1773,7 +1955,7 @@ Accent   = RGB(232, 160, 0)
 | `HANDOVER.md` | **§1.9（本轮五个根因 + 验证表）**、§1.7.1 加"已被用户推翻"标记、§0 源码数 17 → 19 / 探针数 21 → 22、§4 测试资产表、本节、头部版本/体积/sha256 更新 |
 | `dist\ScreenPen.exe` | 302,080 → **314,880 B**（重新构建，非手改） |
 
-### 5.1 上一轮（构建与写盘健壮性加固）
+### 5.2 上两轮（构建与写盘健壮性加固）
 
 | 文件 | 变更 |
 |---|---|
@@ -1803,7 +1985,7 @@ Accent   = RGB(232, 160, 0)
 > 差点被当成产品 bug。实际是 **`dist\ScreenPen.exe` 还是旧的**——
 > 跨进程验收脚本跑的是**构建产物**，改完源码必须先 `build.ps1` 再跑。
 
-### 5.2 上两轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
+### 5.3 上三轮（第一梯队四个功能 + UI 打磨 + 卡片空白修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1829,7 +2011,7 @@ Accent   = RGB(232, 160, 0)
 
 > 本轮**没有**改动的源文件：`src\Program.cs`、`src\Shell.cs`、`src\BrushCursor.cs`、`src\PinForm.cs`。
 
-### 5.3 上三轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
+### 5.4 上四轮（贴图 + 设置窗口可调大小 + 打字抢键 BUG + 12 项加固）
 
 | 文件 | 变更 |
 |---|---|
@@ -1854,7 +2036,7 @@ Accent   = RGB(232, 160, 0)
 
 > 本轮**没有**改动的源文件：`src\BrushCursor.cs`、`src\Native.cs`（`ForceForeground` 等是上一轮的）。
 
-### 5.4 上四轮（7 项需求验收 + 两个真实 BUG 修复）
+### 5.5 上五轮（7 项需求验收 + 两个真实 BUG 修复）
 
 | 文件 | 变更 |
 |---|---|
@@ -1870,7 +2052,7 @@ Accent   = RGB(232, 160, 0)
 | `README.md` | EXE 体积 229 KB → **230 KB**；新增"程序已在运行时再双击 EXE 会弹出设置窗口"；修正文字标注的按键说明（`Enter` 确认 / `Esc` 取消，原文错写成 `Esc` 确认） |
 | `HANDOVER.md` | 本节 + §2.5 陷阱表 + §4 测试资产清单刷新 |
 
-### 5.5 上五轮（UI 遮挡 / 画笔平滑 / F 跟随）
+### 5.6 上六轮（UI 遮挡 / 画笔平滑 / F 跟随）
 
 | 文件 | 变更 |
 |---|---|
@@ -1885,7 +2067,7 @@ Accent   = RGB(232, 160, 0)
 | `build\measure_ui.cs` | **新增**，缩放后真实几何断言 |
 | `build\render_ui.cs` | **新增**，逐页渲染 PNG 供人眼确认 |
 
-### 5.6 更早（快捷键冲突 UX）
+### 5.7 更早（快捷键冲突 UX）
 
 | 文件 | 变更 |
 |---|---|

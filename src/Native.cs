@@ -165,6 +165,28 @@ namespace ScreenPen
             public int Left, Top, Right, Bottom;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SIZE
+        {
+            public int cx;
+            public int cy;
+            public SIZE(int w, int h) { cx = w; cy = h; }
+        }
+
+        /// <summary>
+        /// Blend parameters for <see cref="UpdateLayeredWindow"/>. Pack = 1 is
+        /// required: the struct is four bytes with no padding on any target, and
+        /// the default layout would pad it out to eight and the call would fail.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
+        }
+
         [DllImport("user32.dll")]
         public static extern IntPtr WindowFromPoint(POINT p);
 
@@ -454,6 +476,110 @@ namespace ScreenPen
             catch { }
         }
 
+        // ---- layered windows (per-pixel alpha) ------------------------------
+        //
+        // Form.Opacity can only apply ONE alpha to a whole window, and clipping
+        // a window with an elliptical Region gives hard aliased edges. Neither
+        // can draw a smooth semi-transparent disc whose ring and fill have
+        // different alphas. UpdateLayeredWindow is the only way to hand Windows
+        // a 32bpp bitmap and have it composited per pixel.
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool UpdateLayeredWindow(IntPtr hWnd, IntPtr hdcDst,
+            ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc,
+            int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+
+        public const int ULW_ALPHA = 0x00000002;
+        public const byte AC_SRC_OVER = 0x00;
+        public const byte AC_SRC_ALPHA = 0x01;
+
+        /// <summary>
+        /// Pushes <paramref name="bmp"/> onto a WS_EX_LAYERED window, placing it
+        /// at screen position (<paramref name="x"/>, <paramref name="y"/>) with
+        /// per-pixel alpha.
+        ///
+        /// <paramref name="bmp"/> must be <c>PixelFormat.Format32bppPArgb</c>.
+        /// AC_SRC_ALPHA expects premultiplied colour channels; a straight-alpha
+        /// bitmap produces dark halos around every anti-aliased edge instead of
+        /// blending cleanly. <c>build\cursor_probe.cs</c> locks the bitmap's bits
+        /// and checks the premultiplication directly rather than trusting this
+        /// comment, and also proves GetHbitmap keeps those channels intact.
+        ///
+        /// Returns false when the window is not layered or the bitmap is unusable,
+        /// so callers can report the failure instead of silently drawing nothing.
+        /// </summary>
+        public static bool UpdateLayeredBitmap(IntPtr hWnd, Bitmap bmp, int x, int y)
+        {
+            if (hWnd == IntPtr.Zero || bmp == null) return false;
+
+            IntPtr screenDc = IntPtr.Zero;
+            IntPtr memDc = IntPtr.Zero;
+            IntPtr hBitmap = IntPtr.Zero;
+            IntPtr oldBitmap = IntPtr.Zero;
+            try
+            {
+                screenDc = GetDC(IntPtr.Zero);
+                if (screenDc == IntPtr.Zero) return false;
+                memDc = CreateCompatibleDC(screenDc);
+                if (memDc == IntPtr.Zero) return false;
+
+                // The colour argument is the background GDI+ composites against.
+                // Fully transparent leaves the authored alpha channel alone.
+                hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+                if (hBitmap == IntPtr.Zero) return false;
+                oldBitmap = SelectObject(memDc, hBitmap);
+
+                SIZE size = new SIZE(bmp.Width, bmp.Height);
+                POINT src = new POINT(0, 0);
+                POINT dst = new POINT(x, y);
+                BLENDFUNCTION blend = new BLENDFUNCTION();
+                blend.BlendOp = AC_SRC_OVER;
+                blend.BlendFlags = 0;
+                blend.SourceConstantAlpha = 255;
+                blend.AlphaFormat = AC_SRC_ALPHA;
+
+                return UpdateLayeredWindow(hWnd, screenDc, ref dst, ref size,
+                                           memDc, ref src, 0, ref blend, ULW_ALPHA);
+            }
+            catch { return false; }
+            finally
+            {
+                if (hBitmap != IntPtr.Zero)
+                {
+                    try { SelectObject(memDc, oldBitmap); } catch { }
+                    try { DeleteObject(hBitmap); } catch { }
+                }
+                if (memDc != IntPtr.Zero) { try { DeleteDC(memDc); } catch { } }
+                if (screenDc != IntPtr.Zero) { try { ReleaseDC(IntPtr.Zero, screenDc); } catch { } }
+            }
+        }
+
+        // ---- mouse button polling -------------------------------------------
+
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vKey);
+
+        public const int VK_LBUTTON = 0x01;
+        public const int VK_RBUTTON = 0x02;
+        public const int VK_MBUTTON = 0x04;
+
+        /// <summary>
+        /// True while the given mouse button is physically held down.
+        ///
+        /// Polled rather than hooked, deliberately. A WH_MOUSE_LL hook would give
+        /// exact click timing, but Windows silently unhooks a low-level hook whose
+        /// callback runs past LowLevelHooksTimeout - which is precisely the
+        /// "特效丢失：鼠标挂钩丢失了，这时候需要重启一下程序" failure the reference
+        /// implementation documents in its README. Reading the key state cannot be
+        /// dropped by the OS, and at 60 Hz it resolves clicks far more finely than
+        /// the ripple animation it drives can show.
+        /// </summary>
+        public static bool IsMouseButtonDown(int vKey)
+        {
+            try { return (GetAsyncKeyState(vKey) & 0x8000) != 0; }
+            catch { return false; }
+        }
+
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT p);
 
@@ -694,9 +820,59 @@ namespace ScreenPen
         /// Captures a screen rectangle as a new Bitmap. Uses CAPTUREBLT so
         /// layered windows (including our own overlays) are included.
         /// </summary>
+        /// <summary>
+        /// Called with <c>true</c> immediately before every screen grab and
+        /// <c>false</c> right after. The cursor-spot overlay installs a handler
+        /// while it is running so it can hide itself for the duration.
+        ///
+        /// This lives here instead of at each call site because every capture in
+        /// the app funnels through <see cref="CaptureRegion"/>, and its BitBlt
+        /// deliberately passes CAPTUREBLT - which *includes* layered windows in
+        /// the grab. Without a guard the cursor circle would be baked into our
+        /// own screenshots, GIF frames, colour-picker backdrops and region-select
+        /// backdrops, and any capture path added later would silently start doing
+        /// the same. One funnel, one place to get it right.
+        /// </summary>
+        public static Action<bool> CaptureGuard;
+
+        [DllImport("dwmapi.dll")]
+        static extern int DwmFlush();
+
+        /// <summary>
+        /// Blocks until the compositor has presented the current window state.
+        ///
+        /// Hiding a window is synchronous in the window manager but the desktop
+        /// surface DWM hands back through GetDC(NULL) is one composition behind,
+        /// so a capture issued immediately after ShowWindow(SW_HIDE) can still
+        /// contain the window for a frame. Flushing closes that race instead of
+        /// leaving it to chance. Costs about one refresh interval, which is
+        /// nothing next to a screenshot but is why the GIF recorder suspends the
+        /// overlay for its whole run rather than per frame.
+        /// </summary>
+        public static void FlushComposition()
+        {
+            try { DwmFlush(); } catch { }
+        }
+
+        /// <summary>Grabs <paramref name="bounds"/> off the live screen.</summary>
         public static Bitmap CaptureRegion(Rectangle bounds)
         {
             if (bounds.Width <= 0 || bounds.Height <= 0) return null;
+
+            Action<bool> guard = CaptureGuard;
+            if (guard != null) { try { guard(true); } catch { } }
+            try
+            {
+                return CaptureRegionRaw(bounds);
+            }
+            finally
+            {
+                if (guard != null) { try { guard(false); } catch { } }
+            }
+        }
+
+        static Bitmap CaptureRegionRaw(Rectangle bounds)
+        {
             IntPtr hdcSrc = IntPtr.Zero, hdcDst = IntPtr.Zero, hBmp = IntPtr.Zero, hOld = IntPtr.Zero;
             try
             {

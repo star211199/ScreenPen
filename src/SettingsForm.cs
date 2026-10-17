@@ -52,6 +52,13 @@ namespace ScreenPen
         // GIF
         NumericUpDown _numGifFps, _numGifMax, _numGifCountdown;
         CheckBox _chkGifBorder, _chkGifLoop, _chkGifSkip;
+        // 浮标 (cursor spot + click ripple)
+        HotkeyBox _hkSpot;
+        CheckBox _chkSpot, _chkRipple;
+        NumericUpDown _numSpotRadius, _numSpotRing, _numSpotSmooth;
+        NumericUpDown _numSpotFillAlpha, _numSpotRingAlpha, _numRippleSize;
+        TrackBar _spotRadiusTrack;
+        Button _btnSpotFill, _btnSpotRing, _btnRippleLeft, _btnRippleRight, _btnRippleMiddle;
 
         /// <summary>
         /// Every configurable key in dialog order. It is built while the pages
@@ -117,6 +124,40 @@ namespace ScreenPen
         internal void SetGifCountdownForTest(int v) { _numGifCountdown.Value = Clamp(v, _numGifCountdown); }
         internal void SetOcrCopyForTest(bool v) { _chkOcrCopy.Checked = v; }
 
+        // ---- 浮标 -----------------------------------------------------------
+
+        internal string SpotHotkeyForTest { get { return _hkSpot.Text; } }
+        internal bool SpotEnabledForTest { get { return _chkSpot.Checked; } }
+        internal int SpotRadiusForTest { get { return (int)_numSpotRadius.Value; } }
+        internal int SpotRadiusTrackForTest { get { return _spotRadiusTrack.Value; } }
+        internal int SpotRingForTest { get { return (int)_numSpotRing.Value; } }
+        internal int SpotSmoothForTest { get { return (int)_numSpotSmooth.Value; } }
+        internal int SpotFillAlphaForTest { get { return (int)_numSpotFillAlpha.Value; } }
+        internal string SpotFillColorForTest { get { return _btnSpotFill.Text; } }
+        internal string SpotRingColorForTest { get { return _btnSpotRing.Text; } }
+        internal bool RippleEnabledForTest { get { return _chkRipple.Checked; } }
+        internal int RippleSizeForTest { get { return (int)_numRippleSize.Value; } }
+        internal string RippleLeftColorForTest { get { return _btnRippleLeft.Text; } }
+
+        internal void SetSpotEnabledForTest(bool v) { _chkSpot.Checked = v; }
+        internal void SetSpotRadiusForTest(int v) { _numSpotRadius.Value = Clamp(v, _numSpotRadius); }
+        internal void SetSpotRingForTest(int v) { _numSpotRing.Value = Clamp(v, _numSpotRing); }
+        internal void SetSpotSmoothForTest(int v) { _numSpotSmooth.Value = Clamp(v, _numSpotSmooth); }
+        internal void SetSpotFillAlphaForTest(int v) { _numSpotFillAlpha.Value = Clamp(v, _numSpotFillAlpha); }
+        internal void SetSpotFillColorForTest(string hex) { _btnSpotFill.Text = hex; }
+        internal void SetRippleEnabledForTest(bool v) { _chkRipple.Checked = v; }
+        internal void SetRippleSizeForTest(int v) { _numRippleSize.Value = Clamp(v, _numRippleSize); }
+        internal void SetSpotHotkeyForTest(string k) { _hkSpot.Text = k; }
+
+        /// <summary>Test seam: whether a nav entry with this caption exists.</summary>
+        internal bool HasPageForTest(string name) { return _pages.ContainsKey(name); }
+
+        /// <summary>Test seam: number of nav rail entries.</summary>
+        internal int NavCountForTest { get { return _navButtons.Count; } }
+
+        /// <summary>Test seam: the draft as currently bound to the controls.</summary>
+        internal Settings DraftForTest { get { return _draft; } }
+
         /// <summary>
         /// Runs the dialog's real save path and returns the resulting settings.
         ///
@@ -163,6 +204,17 @@ namespace ScreenPen
         Button _btnBeautifyColor1, _btnBeautifyColor2;
 
         Label _status;
+
+        /// <summary>
+        /// Fires whenever a 浮标 control changes, carrying the draft so the
+        /// caller can draw it on the real desktop straight away.
+        ///
+        /// Tuning a circle you cannot see is guesswork: the values only take
+        /// effect on 保存, and the feature is usually still off while the user
+        /// is setting it up. The controller answers this by putting the overlay
+        /// into preview mode for the duration of the dialog.
+        /// </summary>
+        public Action<Settings> SpotPreviewChanged;
 
         public Settings Result { get; private set; }
 
@@ -1215,6 +1267,7 @@ namespace ScreenPen
             AddNav("画笔");
             AddNav("缩放");
             AddNav("截图");
+            AddNav("浮标");
             AddNav("常规");
             AddNav("关于");
 
@@ -1222,6 +1275,7 @@ namespace ScreenPen
             BuildBrushPage();
             BuildZoomPage();
             BuildShotPage();
+            BuildSpotPage();
             BuildGeneralPage();
             BuildAboutPage();
         }
@@ -2245,6 +2299,248 @@ namespace ScreenPen
             if (!picked.IsEmpty) target.Text = Beautifier.FormatColor(picked);
         }
 
+        // =====================================================================
+        //  浮标页
+        // =====================================================================
+
+        /// <summary>
+        /// The cursor spot ("浮标"): a semi-transparent circle pinned to the
+        /// pointer anywhere on the desktop, plus optional click ripples.
+        ///
+        /// Every control on this page funnels through <see cref="PushSpotPreview"/>,
+        /// which writes the value into the draft and then asks the controller to
+        /// draw it. Without that the user would be dragging sliders blind - the
+        /// values only take effect on 保存, and the feature is normally still
+        /// switched off while it is being set up.
+        /// </summary>
+        void BuildSpotPage()
+        {
+            NewPage("浮标");
+
+            Panel spot = Card2("鼠标浮标",
+                "在指针周围画一个半透明圆圈。录屏、演示或给别人讲操作时，观众能立刻" +
+                "看到鼠标在哪。圆圈不挡点击、不抢焦点，也不会出现在本程序自己的截图和 GIF 里。", 300);
+
+            int y = _cardContentTop;
+
+            _chkSpot = new CheckBox
+            {
+                Text = "开启鼠标浮标",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            spot.Controls.Add(_chkSpot);
+            y += 34;
+
+            // Radius gets both a slider and a box: the slider is what you drag
+            // while watching the circle, the box is what you type an exact
+            // number into. They stay in sync in both directions.
+            spot.Controls.Add(RowLabel("半径 (px)", 16, y + 4));
+            _spotRadiusTrack = new TrackBar
+            {
+                Bounds = new Rectangle(150, y, 300, 34),
+                Minimum = 6, Maximum = 400,
+                TickStyle = TickStyle.None, BackColor = Card
+            };
+            spot.Controls.Add(_spotRadiusTrack);
+
+            _numSpotRadius = new NumericUpDown
+            {
+                Bounds = new Rectangle(462, y, 80, 28),
+                Minimum = 6, Maximum = 400,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            spot.Controls.Add(_numSpotRadius);
+            y += 42;
+
+            spot.Controls.Add(RowLabel("描边宽度 (px)", 16, y + 4));
+            _numSpotRing = new NumericUpDown
+            {
+                Bounds = new Rectangle(150, y, 80, 28),
+                Minimum = 0, Maximum = 24,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            spot.Controls.Add(_numSpotRing);
+
+            spot.Controls.Add(RowLabel("跟随平滑（0 = 紧贴指针）", 300, y + 4));
+            _numSpotSmooth = new NumericUpDown
+            {
+                Bounds = new Rectangle(560, y, 80, 28),
+                Minimum = 0, Maximum = 90, Increment = 5,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            spot.Controls.Add(_numSpotSmooth);
+            y += 40;
+
+            spot.Controls.Add(RowLabel("填充颜色", 16, y + 4));
+            _btnSpotFill = MakeButton("#FFCC00", false);
+            _btnSpotFill.Bounds = new Rectangle(120, y - 1, 130, 30);
+            _btnSpotFill.Click += (s, e) => { PickColorFor(_btnSpotFill); PushSpotPreview(); };
+            spot.Controls.Add(_btnSpotFill);
+
+            spot.Controls.Add(RowLabel("填充不透明度", 300, y + 4));
+            _numSpotFillAlpha = new NumericUpDown
+            {
+                Bounds = new Rectangle(462, y, 80, 28),
+                Minimum = 0, Maximum = 255, Increment = 5,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            spot.Controls.Add(_numSpotFillAlpha);
+            y += 40;
+
+            spot.Controls.Add(RowLabel("描边颜色", 16, y + 4));
+            _btnSpotRing = MakeButton("#FFFFFF", false);
+            _btnSpotRing.Bounds = new Rectangle(120, y - 1, 130, 30);
+            _btnSpotRing.Click += (s, e) => { PickColorFor(_btnSpotRing); PushSpotPreview(); };
+            spot.Controls.Add(_btnSpotRing);
+
+            spot.Controls.Add(RowLabel("描边不透明度", 300, y + 4));
+            _numSpotRingAlpha = new NumericUpDown
+            {
+                Bounds = new Rectangle(462, y, 80, 28),
+                Minimum = 0, Maximum = 255, Increment = 5,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            spot.Controls.Add(_numSpotRingAlpha);
+            y += 42;
+
+            const int gap = 38;
+            _hkSpot = AddHotkeyRow(spot, "开关浮标（在任何程序中都能用）", "浮标", ref y, gap);
+
+            _cardContentTop = AddHint(spot,
+                "不透明度为 0 表示不画：填充为 0 就只剩一圈描边，描边宽度或描边不透明度为 0 就只剩一个实心圆。\n" +
+                "「跟随平滑」越大，圆圈追指针越慢，看起来越柔和，适合讲解；录屏想要精确对位就用 0。\n" +
+                "修改本页任何一项都会立刻在桌面上生效，点「取消」则恢复原来的样子。",
+                16, y + 2, CardWidth - 48);
+
+            Panel ripple = Card2("点击涟漪",
+                "按下鼠标时从点击位置扩散一圈彩色光环，让人看清你点了哪里。" +
+                "光环留在点击时的位置，不会跟着指针跑。", 190);
+
+            y = _cardContentTop;
+
+            _chkRipple = new CheckBox
+            {
+                Text = "开启点击涟漪",
+                ForeColor = TextMain,
+                AutoSize = true,
+                Location = new Point(16, y),
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat
+            };
+            ripple.Controls.Add(_chkRipple);
+            y += 34;
+
+            ripple.Controls.Add(RowLabel("最大直径 (px)", 16, y + 4));
+            _numRippleSize = new NumericUpDown
+            {
+                Bounds = new Rectangle(150, y, 80, 28),
+                Minimum = 40, Maximum = 600, Increment = 10,
+                BackColor = CardAlt, ForeColor = TextMain, BorderStyle = BorderStyle.FixedSingle
+            };
+            ripple.Controls.Add(_numRippleSize);
+            y += 40;
+
+            ripple.Controls.Add(RowLabel("左键", 16, y + 4));
+            _btnRippleLeft = MakeButton("#1E90FF", false);
+            _btnRippleLeft.Bounds = new Rectangle(80, y - 1, 120, 30);
+            _btnRippleLeft.Click += (s, e) => { PickColorFor(_btnRippleLeft); PushSpotPreview(); };
+            ripple.Controls.Add(_btnRippleLeft);
+
+            ripple.Controls.Add(RowLabel("右键", 220, y + 4));
+            _btnRippleRight = MakeButton("#FF4500", false);
+            _btnRippleRight.Bounds = new Rectangle(284, y - 1, 120, 30);
+            _btnRippleRight.Click += (s, e) => { PickColorFor(_btnRippleRight); PushSpotPreview(); };
+            ripple.Controls.Add(_btnRippleRight);
+
+            ripple.Controls.Add(RowLabel("中键", 424, y + 4));
+            _btnRippleMiddle = MakeButton("#22C55E", false);
+            _btnRippleMiddle.Bounds = new Rectangle(488, y - 1, 120, 30);
+            _btnRippleMiddle.Click += (s, e) => { PickColorFor(_btnRippleMiddle); PushSpotPreview(); };
+            ripple.Controls.Add(_btnRippleMiddle);
+            y += 40;
+
+            _cardContentTop = AddHint(ripple,
+                "涟漪会绘制在所有窗口之上，但完全不接收鼠标输入，因此不会影响你正在演示的程序。",
+                16, y, CardWidth - 48);
+
+            AttachSpotEvents();
+            FinishPage();
+        }
+
+        /// <summary>
+        /// Routes every 浮标 control to the live preview.
+        ///
+        /// Done in one place rather than on each control as it is created: a new
+        /// slider added later is one line here instead of a forgotten event
+        /// handler that silently leaves the preview stale.
+        /// </summary>
+        void AttachSpotEvents()
+        {
+            _chkSpot.CheckedChanged += (s, e) => PushSpotPreview();
+            _chkRipple.CheckedChanged += (s, e) => PushSpotPreview();
+
+            // Radius slider and box mirror each other; the guard stops the
+            // round trip from recursing.
+            _spotRadiusTrack.ValueChanged += (s, e) =>
+            {
+                if (_numSpotRadius.Value != _spotRadiusTrack.Value)
+                    _numSpotRadius.Value = _spotRadiusTrack.Value;
+            };
+            _numSpotRadius.ValueChanged += (s, e) =>
+            {
+                if (_spotRadiusTrack.Value != (int)_numSpotRadius.Value)
+                    _spotRadiusTrack.Value = (int)_numSpotRadius.Value;
+                PushSpotPreview();
+            };
+
+            _numSpotRing.ValueChanged += (s, e) => PushSpotPreview();
+            _numSpotSmooth.ValueChanged += (s, e) => PushSpotPreview();
+            _numSpotFillAlpha.ValueChanged += (s, e) => PushSpotPreview();
+            _numSpotRingAlpha.ValueChanged += (s, e) => PushSpotPreview();
+            _numRippleSize.ValueChanged += (s, e) => PushSpotPreview();
+        }
+
+        /// <summary>
+        /// Copies the 浮标 controls into the draft and asks the controller to
+        /// draw the result. Called from every control on the page, so the
+        /// desktop overlay tracks the sliders live.
+        /// </summary>
+        void PushSpotPreview()
+        {
+            if (_loading) return;
+            CollectSpotDraft();
+            Action<Settings> cb = SpotPreviewChanged;
+            if (cb != null)
+            {
+                try { cb(_draft); }
+                catch { }
+            }
+        }
+
+        /// <summary>Reads the 浮标 page's controls into <see cref="_draft"/>.</summary>
+        void CollectSpotDraft()
+        {
+            if (_chkSpot == null) return;   // page not built (should not happen)
+
+            _draft.CursorSpotEnabled = _chkSpot.Checked;
+            _draft.CursorSpotRadius = (int)_numSpotRadius.Value;
+            _draft.CursorSpotRingWidth = (int)_numSpotRing.Value;
+            _draft.CursorSpotSmoothing = (int)_numSpotSmooth.Value;
+            _draft.CursorSpotFillColor = _btnSpotFill.Text.Trim();
+            _draft.CursorSpotFillAlpha = (int)_numSpotFillAlpha.Value;
+            _draft.CursorSpotRingColor = _btnSpotRing.Text.Trim();
+            _draft.CursorSpotRingAlpha = (int)_numSpotRingAlpha.Value;
+            _draft.CursorRippleEnabled = _chkRipple.Checked;
+            _draft.CursorRippleSize = (int)_numRippleSize.Value;
+            _draft.CursorRippleLeftColor = _btnRippleLeft.Text.Trim();
+            _draft.CursorRippleRightColor = _btnRippleRight.Text.Trim();
+            _draft.CursorRippleMiddleColor = _btnRippleMiddle.Text.Trim();
+        }
+
         void BuildGeneralPage()
         {
             NewPage("常规");
@@ -2386,6 +2682,8 @@ namespace ScreenPen
             y = AddHint(a, "截图：区域框选，可保存到文件或直接复制到剪贴板",
                         16, y, CardWidth - 48);
             y = AddHint(a, "跟随滚动：滚轮滚动下方网页，标注随内容一起移动",
+                        16, y, CardWidth - 48);
+            y = AddHint(a, "浮标：指针旁的半透明圆圈 + 点击涟漪，可调大小 / 颜色 / 透明度",
                         16, y, CardWidth - 48);
             y += 6;
 
@@ -2600,6 +2898,24 @@ namespace ScreenPen
             _chkGifLoop.Checked = _draft.GifLoop;
             _chkGifSkip.Checked = _draft.GifSkipIdenticalFrames;
 
+            // ---- 浮标 -------------------------------------------------------
+            _hkSpot.Text = _draft.CursorSpotKey;
+            _chkSpot.Checked = _draft.CursorSpotEnabled;
+            _numSpotRadius.Value = Clamp(_draft.CursorSpotRadius, _numSpotRadius);
+            _spotRadiusTrack.Value = Math.Max(_spotRadiusTrack.Minimum,
+                Math.Min(_spotRadiusTrack.Maximum, _draft.CursorSpotRadius));
+            _numSpotRing.Value = Clamp(_draft.CursorSpotRingWidth, _numSpotRing);
+            _numSpotSmooth.Value = Clamp(_draft.CursorSpotSmoothing, _numSpotSmooth);
+            _numSpotFillAlpha.Value = Clamp(_draft.CursorSpotFillAlpha, _numSpotFillAlpha);
+            _numSpotRingAlpha.Value = Clamp(_draft.CursorSpotRingAlpha, _numSpotRingAlpha);
+            _btnSpotFill.Text = _draft.CursorSpotFillColor;
+            _btnSpotRing.Text = _draft.CursorSpotRingColor;
+            _chkRipple.Checked = _draft.CursorRippleEnabled;
+            _numRippleSize.Value = Clamp(_draft.CursorRippleSize, _numRippleSize);
+            _btnRippleLeft.Text = _draft.CursorRippleLeftColor;
+            _btnRippleRight.Text = _draft.CursorRippleRightColor;
+            _btnRippleMiddle.Text = _draft.CursorRippleMiddleColor;
+
             _chkMagnifier.Checked = _draft.MagnifierDuringLiveZoom;
             _numStep.Value = Clamp(_draft.ZoomStepPercent, _numStep);
             _numMinZoom.Value = Clamp((decimal)_draft.MinZoom, _numMinZoom);
@@ -2802,6 +3118,7 @@ namespace ScreenPen
             _draft.ColorPickerKey = _hkPicker.Text.Trim();
             _draft.OcrKey = _hkOcr.Text.Trim();
             _draft.GifKey = _hkGif.Text.Trim();
+            _draft.CursorSpotKey = _hkSpot.Text.Trim();
             _draft.ZoomInKey = _hkZoomIn.Text.Trim();
             _draft.ZoomOutKey = _hkZoomOut.Text.Trim();
 
@@ -2868,6 +3185,8 @@ namespace ScreenPen
             _draft.GifShowBorder = _chkGifBorder.Checked;
             _draft.GifLoop = _chkGifLoop.Checked;
             _draft.GifSkipIdenticalFrames = _chkGifSkip.Checked;
+
+            CollectSpotDraft();
 
             _draft.RegionDimOutside = _chkRegionDim.Checked;
             _draft.RegionShowSize = _chkRegionSize.Checked;

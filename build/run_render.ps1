@@ -1,4 +1,5 @@
-# Compile and run the visual diagnostics (render_pin / render_ui / render_scroll).
+# Compile and run the visual diagnostics
+# (render_pin / render_ui / render_scroll / render_gifresult / render_cursor).
 #
 # These are NOT part of run_probes.ps1: they exist to produce PNGs for a human to
 # look at, not to assert anything. Without this script the only way to run them
@@ -8,7 +9,7 @@
 #
 # Usage:
 #   .\build\run_render.ps1                     # render_pin
-#   .\build\run_render.ps1 render_ui render_scroll render_gifresult
+#   .\build\run_render.ps1 render_ui render_scroll render_gifresult render_cursor
 #
 # Output lands in build\shots\render\.
 param([string[]] $Names = @('render_pin'))

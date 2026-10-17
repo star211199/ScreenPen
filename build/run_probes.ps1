@@ -55,7 +55,7 @@ $srcs = @(
   'src\SettingsForm.cs', 'src\Shell.cs', 'src\PinForm.cs'
   'src\Beautifier.cs', 'src\ColorPickerForm.cs'
   'src\Gif.cs', 'src\Ocr.cs', 'src\GifRecorder.cs', 'src\OcrResultForm.cs'
-  'src\GifResultForm.cs', 'src\KeyboardHook.cs'
+  'src\GifResultForm.cs', 'src\KeyboardHook.cs', 'src\CursorSpot.cs'
 )
 
 $probes = @(
@@ -64,7 +64,7 @@ $probes = @(
   'hotkey_record_probe', 'text_focus_probe', 'hostile_focus_probe', 'pin_probe'
   'typing_probe', 'measure_toolbar', 'tier1_probe', 'layout_cards'
   'gif_delta_probe', 'gif_ocr_probe', 'gif_recorder_probe', 'ocr_gif_wiring_probe'
-  'ux_fix_probe'
+  'ux_fix_probe', 'cursor_probe'
 )
 
 if ($Only) {

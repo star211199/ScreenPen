@@ -1,11 +1,11 @@
 # ScreenPen 屏幕画笔 · 使用说明
 
 一个绿色免安装的屏幕标注工具：**实时画笔 + 区域/窗口截图 + 桌面贴图 + 实时缩放 + 屏幕取色 +
-标注跟随滚动 + 截图美化 + 文字识别(OCR) + 录制 GIF 动图**。
+标注跟随滚动 + 截图美化 + 文字识别(OCR) + 录制 GIF 动图 + 鼠标浮标**。
 双击即用，无外部依赖，不写注册表（开机自启除外）。
 
-- 程序文件：`dist\ScreenPen.exe`（294 KB，单文件）
-- 配置文件：`dist\ScreenPen.settings.json`（与 EXE 同目录，绿色便携，78 个键）
+- 程序文件：`dist\ScreenPen.exe`（328 KB，单文件）
+- 配置文件：`dist\ScreenPen.settings.json`（与 EXE 同目录，绿色便携，92 个键）
 
 **标注工具**：画笔、直线、矩形、椭圆、箭头（直/弧/折三种样式）、文字、马赛克、聚光灯、
 荧光笔、序号标记 —— 全部支持多级撤销 / 重做。
@@ -41,9 +41,10 @@
 | `Ctrl + Alt + P` | **屏幕取色器**（放大镜取色，取完自动复制色号） |
 | `Ctrl + Alt + O` | **识别选区文字**（OCR，框选后识别并复制） |
 | `Ctrl + Alt + G` | **录制选区为 GIF**（框选后开始录制动图） |
+| `Ctrl + Alt + H` | 开关**鼠标浮标**（指针旁的半透明圆圈，见第八节） |
 | `Ctrl + ↑` / `Ctrl + ↓` | 放大 / 缩小画面 |
 
-**全部快捷键都可以在设置里改**（见第六节）。
+**全部快捷键都可以在设置里改**（见第九节）。
 
 ### 画笔模式下的按键
 
@@ -435,7 +436,69 @@
 
 ---
 
-## 八、设置页面
+## 八、鼠标浮标（指针高亮）
+
+在鼠标指针周围画一个**半透明的圆圈**，再加一圈**点击涟漪**。录屏、演示、
+给别人讲操作的时候，观众能一眼看到你的鼠标在哪、点了什么。
+
+这个功能的交互思路参照 [cuiliang/ClickShow](https://github.com/cuiliang/ClickShow)
+的 hover dot 与 click indicator。
+
+**用法**：
+
+1. 按 `Ctrl + Alt + H` 开关浮标（任何时候都能按，包括在别的程序里）；
+2. 或右键托盘图标 → **鼠标浮标（指针旁的半透明圆圈）**，前面的勾表示当前是开还是关；
+3. 或者到 **设置 → 浮标** 页，勾选 **开启鼠标浮标**。
+
+所有参数都在 **设置 → 浮标** 页里，**改任何一项都会立刻在桌面上生效**，
+不用先保存——拖动滑杆的同时就能看到圆圈在变。点「取消」则恢复原来的样子。
+
+### 鼠标浮标
+
+| 参数 | 说明 | 默认 |
+| --- | --- | --- |
+| 半径 | 圆圈的大小，6 ~ 400 px | 40 |
+| 描边宽度 | 圆圈的边框粗细，0 表示不画边框 | 2 |
+| 跟随平滑 | 0 = 紧贴指针；越大追得越慢、越柔和 | 0 |
+| 填充颜色 / 不透明度 | 圆内的颜色，0 表示只留一个空心圈 | `#FFCC00` / 80 |
+| 描边颜色 / 不透明度 | 边框颜色，不透明度 0 或不写宽度就只剩实心圆 | `#FFFFFF` / 200 |
+
+- **填充和描边都可以单独关掉**：填充不透明度 0 就是空心圈，描边宽度 0 就是实心圆，
+  两个都 0 就什么都不画。
+- **跟随平滑**是给讲解用的：调到 40~60 左右，圆圈会带着一点延迟跟在指针后面，
+  看起来更柔和，眼睛也更容易跟上；录屏要精确对位就用 0。
+- 圆圈**完全不接收鼠标输入**（`WS_EX_TRANSPARENT`），所以点它下面的按钮、链接、
+  图标都照常生效；也**不会抢焦点**（`WS_EX_NOACTIVATE`）。
+
+### 点击涟漪
+
+按下鼠标时，从点击位置扩散一圈彩色光环，600 毫秒内放大并淡出。
+
+| 参数 | 说明 | 默认 |
+| --- | --- | --- |
+| 最大直径 | 光环扩散到的直径，40 ~ 600 px | 150 |
+| 左键 / 右键 / 中键颜色 | 三种按键各用一种颜色，一眼看出点了哪个键 | `#1E90FF` / `#FF4500` / `#22C55E` |
+
+- 光环**钉在点击的位置**，不会跟着指针跑——它标记的是"刚才点了这里"。
+- 只认**按下的那一下**（上升沿），按住不放只会出现一圈，不会刷屏。
+
+### 几个实用细节
+
+- **不会出现在本程序自己的截图和 GIF 里**：所有截图都走同一个抓屏函数，
+  它在 BitBlt 之前会让浮标先隐藏并等一帧合成完成（`DwmFlush`），
+  所以圈永远不会被烤进你的截图、GIF 帧、取色器底图和框选底图。
+- **框选和取色时自动让开**：框选区域、屏幕取色这两个操作会临时把浮标收起来。
+  取色尤其必要——放大镜是放大真实屏幕的，圆圈盖在上面会把圆圈自己的颜色取走。
+- **GIF 录制期间整段收起**：否则 10 帧/秒的抓屏会让圆圈每秒闪 10 下。
+- **多显示器不同缩放比例**：圆圈每秒重新读一次当前显示器的 DPI，
+  跨屏时看起来大小不变。
+- **始终置顶但会自我重申**：Windows 的置顶窗口按"最后一次置顶的时间"排序，
+  所以它每秒重新置顶一次，免得被后来的窗口压住。
+- 默认**关闭**：不占 CPU，也不打扰平时使用。
+
+---
+
+## 九、设置页面
 
 打开方式（任选其一）：
 
@@ -451,6 +514,7 @@
 | **画笔** | 默认笔宽、笔宽上下限、文字大小、马赛克块大小、调色板、线条平滑、**修饰键覆盖开关**、**画笔光标**、**荧光笔透明度 / 箭头样式 / 序号圆点大小 / 序号跨图连续**。 |
 | **缩放** | 缩放步进、最小/最大倍率、缩放时是否显示放大镜、边缘移动速度。 |
 | **截图** | 图片格式（PNG/JPG/BMP）、是否保存到默认文件夹、默认文件夹路径、是否播放提示音、框选时的压暗与尺寸显示、**美化截图（背景/圆角/阴影/渐变色）**、**屏幕取色器（放大镜大小与倍率）**。 |
+| **浮标** | **鼠标浮标**（开关、半径、描边宽度、跟随平滑、填充/描边颜色与不透明度、全局快捷键）与**点击涟漪**（开关、最大直径、左/右/中键颜色）。**改任何一项都会立刻在桌面上生效**（见第八节）。 |
 | **常规** | **开机自动启动**、显示托盘图标、启动时最小化、**跟随滚动**三项。 |
 | **关于** | 版本、程序路径、配置文件路径、快捷键速查。 |
 
@@ -479,7 +543,7 @@
 
 ---
 
-## 九、画笔光标
+## 十、画笔光标
 
 画笔模式下，鼠标指针会变成 `assets\画笔.svg` 渲染出的**画笔图标**（白色描边 + 黑色投影，
 在深色和浅色背景上都看得清）。
@@ -491,7 +555,7 @@
 
 ---
 
-## 十、开机自动启动
+## 十一、开机自动启动
 
 两种设置方式：
 
@@ -514,7 +578,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十一、配置文件（完整 78 键）
+## 十二、配置文件（完整 92 键）
 
 文件位置：**与 EXE 同目录** 的 `ScreenPen.settings.json`
 
@@ -529,6 +593,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
   "ColorPickerKey":   "Ctrl+Alt+P",   // 屏幕取色器
   "OcrKey":           "Ctrl+Alt+O",   // 识别选区文字（OCR）
   "GifKey":           "Ctrl+Alt+G",   // 录制选区为 GIF
+  "CursorSpotKey":    "Ctrl+Alt+H",   // 开关鼠标浮标
   "UndoKey":          "Ctrl+Z",       // 撤销
   "RedoKey":          "Ctrl+Y",       // 重做
   "SaveKey":          "Ctrl+S",       // 保存标注图（画笔模式下）
@@ -620,6 +685,22 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
   "GifShowBorder":       true,        // 录制时显示红框与状态条
   "GifCountdownSeconds": 3,           // 开始前倒计时秒数 0~10
 
+  // ---- 鼠标浮标 ----
+  "CursorSpotEnabled":      false,    // 开关（托盘勾选项 / Ctrl+Alt+H 同步它）
+  "CursorSpotRadius":       40,       // 圆圈半径 (px) 6~400
+  "CursorSpotRingWidth":    2,        // 描边宽度 (px) 0~24，0=不画边框
+  "CursorSpotSmoothing":    0,        // 跟随平滑 0~90，0=紧贴指针
+  "CursorSpotFillColor":    "#FFCC00",// 填充色
+  "CursorSpotFillAlpha":    80,       // 填充不透明度 0~255，0=空心圈
+  "CursorSpotRingColor":    "#FFFFFF",// 描边色
+  "CursorSpotRingAlpha":    200,      // 描边不透明度 0~255
+  // ---- 点击涟漪 ----
+  "CursorRippleEnabled":    false,    // 点击时扩散一圈光环
+  "CursorRippleSize":       150,      // 扩散到的最大直径 (px) 40~600
+  "CursorRippleLeftColor":  "#1E90FF",// 左键
+  "CursorRippleRightColor": "#FF4500",// 右键
+  "CursorRippleMiddleColor":"#22C55E",// 中键
+
   // ---- 跟随滚动 ----
   "ScrollFollowEnabled":        true, // 允许 F 键开启跟随滚动
   "WheelScrollsDocument":       true, // 滚轮滚动网页（false=调笔宽）
@@ -648,7 +729,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十二、多显示器与高 DPI
+## 十三、多显示器与高 DPI
 
 - 程序声明为 **Per-Monitor DPI Aware V2**，在 4K / 缩放 125%、150%、200% 的屏幕上
   坐标**不会错位**，设置界面也会按当前 DPI 等比放大。
@@ -657,7 +738,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十三、数据与隐私
+## 十四、数据与隐私
 
 - **纯本地运行**，不联网、不上传任何内容。
 - 只写两个位置：
@@ -668,7 +749,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十四、常见问题
+## 十五、常见问题
 
 **Q：按快捷键没反应？**
 1. 确认程序在运行（看托盘图标）。
@@ -697,7 +778,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 不会留在桌面上，也不会残留进程。
 
 **Q：设置窗口太小 / 想放大？**
-直接拖边框或点最大化即可，设置窗口已经可以自由调整大小（见第六节）。
+直接拖边框或点最大化即可，设置窗口已经可以自由调整大小（见第九节）。
 拉大只会多出空白，不会把内容拉变形。
 
 **Q：按 `F` 说"无法开启跟随滚动"？**
@@ -722,7 +803,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 ---
 
-## 十五、开发者：重新编译
+## 十六、开发者：重新编译
 
 ```powershell
 cd ScreenPen
@@ -749,35 +830,37 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | `src\GifRecorder.cs` | **GIF 录制**：定时采样选区、倒计时、时长上限、录制红框 |
 | `src\GifResultForm.cs` | **GIF 结果窗口**：显示保存路径（可选中复制）+ 复制路径 / 在文件夹中显示 / 打开 |
 | `src\KeyboardHook.cs` | 录制期间临时挂的 `WH_KEYBOARD_LL` 钩子，让 `Esc` 能停止录制 |
+| `src\CursorSpot.cs` | **鼠标浮标**：分层窗口 + `UpdateLayeredWindow` 画半透明圆圈与点击涟漪，含跟随循环与截图让位 |
 | `src\Ocr.cs` | **文字识别**：反射绑定 WinRT `Windows.Media.Ocr`，含小图放大与坐标换算 |
 | `src\OcrResultForm.cs` | **识别结果窗口**：可选中/可复制的文本 + 再次复制 |
 | `src\BrushCursor.cs` | 从 `assets\画笔.svg` 生成画笔光标 |
-| `src\SettingsForm.cs` | 深色设置界面（6 个页面，支持高 DPI 缩放，**窗口可自由调整大小**） |
+| `src\SettingsForm.cs` | 深色设置界面（7 个页面，支持高 DPI 缩放，**窗口可自由调整大小**） |
 | `src\AppContext2.cs` | 控制器：托盘、热键分发、截图保存、贴图管理、模式切换 |
 | `src\Shell.cs` | 单实例、开机自启、图标加载 |
 
-共 **19 个 `.cs` 文件**（含 `Program.cs`）。
+共 **20 个 `.cs` 文件**（含 `Program.cs`）。
 
 > `Gif.cs` / `GifRecorder.cs` 需要引用 WPF 的 `PresentationCore` / `WindowsBase` /
 > `System.Xaml`，`build.ps1` 会自动从 .NET Framework 目录里取，**不需要 SDK**。
 
 ### 自动化测试
 
-**一条命令跑完全部 21 个进程内探针**（推荐）：
+**一条命令跑完全部 23 个进程内探针**（推荐）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\run_probes.ps1
 ```
 
-其中 4 个是本轮新增功能的专项探针：
+其中 6 个是最近两轮新增功能的专项探针：
 
 | 探针 | 验证的事 |
 | --- | --- |
 | `gif_delta_probe` | 帧延时回填与 `NETSCAPE2.0` 循环块真的写进了 GIF 字节里 |
 | `gif_ocr_probe` | GIF 延时/循环/合并帧 + OCR 识别、放大、坐标换算、工作线程超时 |
 | `gif_recorder_probe` | 录制真的采样、写出的 GIF 可被独立解码、时长上限、取消、红框不入画 |
-| `ocr_gif_wiring_probe` | `RegionAction` 取值稳定、工具条有全部 6 个按钮且点击落到正确动作、`O`/`G` 按键、78 键读写 |
+| `ocr_gif_wiring_probe` | `RegionAction` 取值稳定、工具条有全部 6 个按钮且点击落到正确动作、`O`/`G` 按键、92 键读写 |
 | `ux_fix_probe` | 四个反馈问题的回归：工具条入口、选区移动/8 把手缩放与边界钳制、GIF 结果窗口路径可见、滚轮穿透与穿透撤销、`Esc` 停止录制的真实按键到达 |
+| `cursor_probe` | **鼠标浮标**：平滑曲线单调且 0 值紧贴指针、圆的像素（中心填充/半径处描边/四角全透明）、从真实 HWND 读出的 `LAYERED`/`TRANSPARENT`/`NOACTIVATE`、嵌套 Suspend/Resume、预览用草稿值、截图期间圆圈确实不在屏上、涟漪是环不是盘且会过期、92 键读写与设置页双向绑定 |
 
 **可行性探针**（4 个，38 条断言）——回答"某个候选功能在本机到底能不能做"，
 它们**不编译程序源码**，是《ScreenPen功能增强调研报告.md》里每条结论的可复现证据：
@@ -798,23 +881,31 @@ powershell -ExecutionPolicy Bypass -File build\run_feasibility.ps1
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 D:\Miniconda3\envs\py312\python.exe build\e2e_test.py       # 端到端功能测试
-D:\Miniconda3\envs\py312\python.exe build\capture_ui.py     # 抓取 6 个设置页面截图
+D:\Miniconda3\envs\py312\python.exe build\capture_ui.py     # 抓取 7 个设置页面截图
 D:\Miniconda3\envs\py312\python.exe build\verify_ui.py      # 界面布局断言
 D:\Miniconda3\envs\py312\python.exe build\verify_hotkeys.py # 快捷键重绑 + 冲突保存
 D:\Miniconda3\envs\py312\python.exe build\verify_brush.py   # 画笔光标
 D:\Miniconda3\envs\py312\python.exe build\verify_resize.py  # 设置窗口可调整大小
 D:\Miniconda3\envs\py312\python.exe build\verify_upgrade.py # 各工具绘制结果 + 区域截图 + 剪贴板
 D:\Miniconda3\envs\py312\python.exe build\verify_readme.py  # 本文档与真实配置一致性
+D:\Miniconda3\envs\py312\python.exe build\verify_cursor_live.py # 浮标真的画在真实桌面上
 ```
+
+> `verify_cursor_live.py` 会**临时改写配置、启动程序、移动鼠标、抓屏**，跑完把配置和
+> 鼠标位置都还原。它用**另一个进程**的 GDI 抓屏（不走本程序的捕获路径），
+> 因为本程序的捕获路径会**故意先藏起圆圈**——用自己去验自己等于什么都没验。
 
 > ⚠️ **`verify_ui.py` 不会自己截图**，它读 `capture_ui.py` 上一步生成的 PNG。
 > 改了界面却只跑 `verify_ui.py`，它会拿旧图给你一个毫无意义的满分。
 > 顺序必须是 **先 `capture_ui.py`，再 `verify_ui.py`**。
+> `capture_ui.py` 每次都会先清空 `build\shots\*.png`，所以页面增删后不会留下
+> 上一套编号的旧图被当成新图校验。
 
 看界面而不是断言界面（产物在 `build\shots\render\`，用来人眼核对）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\run_render.ps1 render_pin
+powershell -ExecutionPolicy Bypass -File build\run_render.ps1 render_cursor   # 浮标 + 涟漪
 ```
 
 > 测试脚本会声明 `SetProcessDpiAwarenessContext(-4)`。

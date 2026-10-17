@@ -148,6 +148,8 @@ namespace ScreenPen
         public string OcrKey = "Ctrl+Alt+O";
         /// <summary>Record the selected region to an animated GIF.</summary>
         public string GifKey = "Ctrl+Alt+G";
+        /// <summary>Show or hide the cursor circle (浮标).</summary>
+        public string CursorSpotKey = "Ctrl+Alt+H";
 
         public int PenWidth = 3;
         public int MinPenWidth = 1;
@@ -291,6 +293,46 @@ namespace ScreenPen
         /// </summary>
         public bool ScrollFollowClickThrough = false;
 
+        // ---- 鼠标浮标 (the cursor circle) -----------------------------------
+        //
+        // Named CursorSpot* rather than Spot* on purpose: this file already has
+        // SpotlightDim / SpotlightKey for the 聚光灯 annotation tool, and
+        // "SpotRadius" next to "SpotlightDim" would be a trap for the next reader.
+
+        /// <summary>
+        /// Show a semi-transparent circle around the pointer, anywhere on the
+        /// desktop. Off by default: it is a desktop-wide always-on-top overlay,
+        /// so it should appear because the user asked for it, not on upgrade.
+        /// </summary>
+        public bool CursorSpotEnabled = false;
+        /// <summary>Radius of the visible circle, in 96-DPI pixels.</summary>
+        public int CursorSpotRadius = 40;
+        /// <summary>Colour of the disc inside the ring.</summary>
+        public string CursorSpotFillColor = "#FFCC00";
+        /// <summary>Opacity of the disc, 0-255. 0 leaves only the ring.</summary>
+        public int CursorSpotFillAlpha = 80;
+        /// <summary>Colour of the outline.</summary>
+        public string CursorSpotRingColor = "#FFFFFF";
+        /// <summary>Opacity of the outline, 0-255.</summary>
+        public int CursorSpotRingAlpha = 200;
+        /// <summary>Outline width in 96-DPI pixels. 0 draws no outline.</summary>
+        public int CursorSpotRingWidth = 2;
+        /// <summary>
+        /// Follow smoothing, 0-90. 0 glues the circle to the pointer; higher
+        /// values make it trail behind, which reads as calmer in a recording.
+        /// </summary>
+        public int CursorSpotSmoothing = 0;
+
+        // ---- 点击波纹 (the click ripple) -------------------------------------
+
+        /// <summary>Draw an expanding ring wherever the mouse is clicked.</summary>
+        public bool CursorRippleEnabled = false;
+        /// <summary>Final diameter of a ripple, in 96-DPI pixels.</summary>
+        public int CursorRippleSize = 150;
+        public string CursorRippleLeftColor = "#1E90FF";
+        public string CursorRippleMiddleColor = "#22C55E";
+        public string CursorRippleRightColor = "#FF4500";
+
         // ---- colour helpers -------------------------------------------------
 
         public Color[] ColorArray()
@@ -390,6 +432,29 @@ namespace ScreenPen
             if (PickerZoom < 2) PickerZoom = 2;
             if (PickerZoom > 32) PickerZoom = 32;
 
+            // Cursor spot. Every one of these reaches GDI+ as a brush colour, an
+            // alpha or a stroke width, so an out-of-range value from a
+            // hand-edited config would throw inside the overlay's paint path -
+            // and that runs 60 times a second.
+            if (CursorSpotRadius < 6) CursorSpotRadius = 6;
+            if (CursorSpotRadius > 400) CursorSpotRadius = 400;
+            if (CursorSpotFillAlpha < 0) CursorSpotFillAlpha = 0;
+            if (CursorSpotFillAlpha > 255) CursorSpotFillAlpha = 255;
+            if (CursorSpotRingAlpha < 0) CursorSpotRingAlpha = 0;
+            if (CursorSpotRingAlpha > 255) CursorSpotRingAlpha = 255;
+            if (CursorSpotRingWidth < 0) CursorSpotRingWidth = 0;
+            if (CursorSpotRingWidth > 24) CursorSpotRingWidth = 24;
+            if (CursorSpotSmoothing < 0) CursorSpotSmoothing = 0;
+            if (CursorSpotSmoothing > 90) CursorSpotSmoothing = 90;
+            if (!TryParseColor(CursorSpotFillColor, out tmp)) CursorSpotFillColor = "#FFCC00";
+            if (!TryParseColor(CursorSpotRingColor, out tmp)) CursorSpotRingColor = "#FFFFFF";
+
+            if (CursorRippleSize < 40) CursorRippleSize = 40;
+            if (CursorRippleSize > 600) CursorRippleSize = 600;
+            if (!TryParseColor(CursorRippleLeftColor, out tmp)) CursorRippleLeftColor = "#1E90FF";
+            if (!TryParseColor(CursorRippleMiddleColor, out tmp)) CursorRippleMiddleColor = "#22C55E";
+            if (!TryParseColor(CursorRippleRightColor, out tmp)) CursorRippleRightColor = "#FF4500";
+
             // OCR: 0 disables the small-region upscale, anything above 8 is
             // pointless (it only costs memory and time).
             if (OcrUpscaleSmall < 0) OcrUpscaleSmall = 0;
@@ -425,6 +490,7 @@ namespace ScreenPen
             if (string.IsNullOrWhiteSpace(WindowShotKey)) { def = def ?? new Settings(); WindowShotKey = def.WindowShotKey; }
             if (string.IsNullOrWhiteSpace(OcrKey)) { def = def ?? new Settings(); OcrKey = def.OcrKey; }
             if (string.IsNullOrWhiteSpace(GifKey)) { def = def ?? new Settings(); GifKey = def.GifKey; }
+            if (string.IsNullOrWhiteSpace(CursorSpotKey)) { def = def ?? new Settings(); CursorSpotKey = def.CursorSpotKey; }
         }
 
         /// <summary>

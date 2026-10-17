@@ -3,7 +3,7 @@
 For each page we check:
   * a dark background dominates and cards are visible
   * text pixels exist in the expected rows (headings, labels, values)
-  * the left nav rail keeps all six entries drawn
+  * the left nav rail keeps all seven entries drawn
   * pages differ from each other (i.e. navigation really switches content)
   * nothing is clipped at the right edge and no text overlaps the nav rail
 """
@@ -66,7 +66,7 @@ for name, a in imgs.items():
     check("background dominates", frac_bg > 0.15, f"{frac_bg:.1%} bg")
     check("cards are drawn", frac_card > 0.25, f"{frac_card:.1%} card")
 
-    # --- nav rail: all six entries must be drawn ----------------------------
+    # --- nav rail: all seven entries must be drawn ---------------------------
     nav = a[:, :NAV_W]
     nav_diff = 0
     for c, col in (("card", CARD), ("accent", ACCENT), ("sub", TEXTSUB),
@@ -99,7 +99,7 @@ for name, a in imgs.items():
     # OS caption: its dark title text sits right on TEXTMAIN and was contributing
     # a few thousand pixels to every page. capture_ui.py now crops to the client
     # area, so the floor has to reflect real pages. 关于 is the sparsest of the
-    # six (5166 px - it is mostly secondary-colour prose); the next lowest is
+    # seven (5166 px - it is mostly secondary-colour prose); the next lowest is
     # 10304. 4000 clears "blank" with room to spare and stays well under every
     # real page.
     bright = near(a, TEXTMAIN, 45).sum()

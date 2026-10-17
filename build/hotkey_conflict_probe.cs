@@ -73,11 +73,40 @@ class HotkeyConflictProbe
 
     static List<TextBox> KeyBoxes(Form f)
     {
+        // ShowPage() deliberately detaches every page but the current one from
+        // _content, so walking the form's control tree only reaches the page
+        // that happens to be selected. That was invisible while every key row
+        // lived on the 快捷键 page; the moment a key row moved to another page
+        // (浮标) the walk silently under-counted and this check failed for a
+        // reason that had nothing to do with the invariant it guards. Walk the
+        // page dictionary as well, so "every row built in the UI" really means
+        // every row.
         var list = new List<TextBox>();
-        foreach (Control c in Walk(f))
+        var seen = new HashSet<TextBox>();
+
+        Action<Control> add = delegate(Control root)
         {
-            TextBox tb = c as TextBox;
-            if (tb != null && tb.ReadOnly) list.Add(tb);
+            foreach (Control c in Walk(root))
+            {
+                TextBox tb = c as TextBox;
+                if (tb != null && tb.ReadOnly && seen.Add(tb)) list.Add(tb);
+            }
+        };
+
+        add(f);
+        FieldInfo pagesField = typeof(SettingsForm).GetField("_pages",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (pagesField != null)
+        {
+            var pages = pagesField.GetValue(f) as System.Collections.IDictionary;
+            if (pages != null)
+            {
+                foreach (System.Collections.DictionaryEntry e in pages)
+                {
+                    Control page = e.Value as Control;
+                    if (page != null) add(page);
+                }
+            }
         }
         return list;
     }

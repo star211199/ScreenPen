@@ -17,6 +17,16 @@ EXE = Path(r"D:\AtGuiGu_Java+AI\code\AICoding\rea_project\ScreenPen\dist\ScreenP
 OUT = Path(r"D:\AtGuiGu_Java+AI\code\AICoding\rea_project\ScreenPen\build\shots")
 OUT.mkdir(parents=True, exist_ok=True)
 
+# Clear previous captures. verify_ui.py asserts over whatever PNGs it finds
+# here, so a leftover shot from an older page set (e.g. 05_about.png after the
+# pages were renumbered) would be verified as if it were current - the exact
+# "the checker is measuring a stale screenshot" trap that already bit once.
+for stale in OUT.glob("*.png"):
+    try:
+        stale.unlink()
+    except OSError:
+        pass
+
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 
@@ -149,8 +159,8 @@ def click(hwnd, x, y):
     time.sleep(0.5)
 
 
-NAV_LABELS = ["快捷键", "画笔", "缩放", "截图", "常规", "关于"]
-SHOT_NAMES = ["hotkeys", "brush", "zoom", "screenshot", "general", "about"]
+NAV_LABELS = ["快捷键", "画笔", "缩放", "截图", "浮标", "常规", "关于"]
+SHOT_NAMES = ["hotkeys", "brush", "zoom", "screenshot", "spot", "general", "about"]
 
 
 def find_nav_buttons(hwnd):

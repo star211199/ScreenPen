@@ -29,6 +29,7 @@ namespace ScreenPen
         const int HK_PICKER = 8;
         const int HK_OCR = 9;
         const int HK_GIF = 10;
+        const int HK_SPOT = 11;
 
         Settings _cfg;
         OverlayForm _overlay;
@@ -36,6 +37,16 @@ namespace ScreenPen
         HotkeyWindow _msgWindow;
         SettingsForm _settingsForm;
         GifRecorder _gifRecorder;
+
+        /// <summary>
+        /// The 浮标 overlay: a semi-transparent circle on the pointer, plus
+        /// optional click ripples. Lives for the whole process so the circle can
+        /// be toggled without paying for window creation each time.
+        /// </summary>
+        CursorSpotOverlay _spot;
+
+        /// <summary>Tray item whose tick mirrors <c>CursorSpotEnabled</c>.</summary>
+        ToolStripMenuItem _spotItem;
 
         /// <summary>
         /// Set once <see cref="Quit"/> starts. A finished recording would
@@ -91,6 +102,13 @@ namespace ScreenPen
                     HideOverlay();
                 }
             };
+
+            // Created unconditionally: construction is cheap (two hidden
+            // windows, no timer) and it installs the capture guard, which is what
+            // keeps the circle out of our own screenshots even before the user
+            // has ever switched the feature on.
+            _spot = new CursorSpotOverlay();
+            _spot.ApplySettings(_cfg);
 
             BuildTray();
             RegisterAllHotkeys();
@@ -153,6 +171,14 @@ namespace ScreenPen
             _stopGifItem = MenuItem("停止 GIF 录制", (s, e) => StopGifRecording());
             _stopGifItem.Enabled = false;
             menu.Items.Add(_stopGifItem);
+            // Checkable rather than a pair of 开/关 items: the tick is the only
+            // place the current state is visible, and it doubles as the answer to
+            // "is the circle on or did it just not draw?".
+            _spotItem = new ToolStripMenuItem("鼠标浮标（指针旁的半透明圆圈）");
+            _spotItem.CheckOnClick = false;
+            _spotItem.Click += (s, e) => ToggleCursorSpot(true);
+            _spotItem.Checked = _cfg.CursorSpotEnabled;
+            menu.Items.Add(_spotItem);
             menu.Items.Add(MenuItem("整屏截图并保存…", (s, e) => ScreenshotToFile()));
             menu.Items.Add(MenuItem("复制整屏到剪贴板", (s, e) => CopyToClipboard()));
             menu.Items.Add(new ToolStripSeparator());
@@ -201,6 +227,7 @@ namespace ScreenPen
             TryRegister(HK_PICKER, _cfg.ColorPickerKey, "取色器");
             TryRegister(HK_OCR, _cfg.OcrKey, "文字识别");
             TryRegister(HK_GIF, _cfg.GifKey, "录制 GIF");
+            TryRegister(HK_SPOT, _cfg.CursorSpotKey, "浮标");
             TryRegister(HK_ZOOM_IN, _cfg.ZoomInKey, "放大");
             TryRegister(HK_ZOOM_OUT, _cfg.ZoomOutKey, "缩小");
         }
@@ -294,6 +321,7 @@ namespace ScreenPen
                 case HK_PICKER: StartColorPicker(); break;
                 case HK_OCR: RegionScreenshot(RegionAction.Ocr); break;
                 case HK_GIF: RegionScreenshot(RegionAction.RecordGif); break;
+                case HK_SPOT: ToggleCursorSpot(false); break;
                 case HK_ZOOM_IN:
                     if (_overlay.Visible) _overlay.ZoomBy(120, CursorAtClient());
                     break;
@@ -614,6 +642,10 @@ namespace ScreenPen
 
             bool overlayWasVisible = _overlay.Visible;
             Bitmap frozen = null;
+            // The circle must not sit over the frozen backdrop the user is
+            // selecting from. Suspended for the whole interaction rather than
+            // left to the per-capture guard, which would blink it on and off.
+            SuspendSpot();
             try
             {
                 frozen = overlayWasVisible
@@ -752,6 +784,7 @@ namespace ScreenPen
                     try { _overlay.ResumeAfterCapture(); }
                     catch { }
                 }
+                ResumeSpot();
             }
         }
 
@@ -835,6 +868,7 @@ namespace ScreenPen
             {
                 _gifRecorder = null;
                 StopRecordingKeyWatch();
+                ResumeSpot();
 
                 string file = rec.LastFile;
                 int frames = rec.FrameCount;
@@ -867,6 +901,11 @@ namespace ScreenPen
 
             try
             {
+                // Held down for the whole recording, not just per frame. Every
+                // frame goes through Native.CaptureRegion, whose guard would
+                // otherwise hide and re-show the circle ten times a second -
+                // a very visible blink, and pointless work.
+                SuspendSpot();
                 rec.Start(region, null);
                 // Start() can fail synchronously (region too small) and raise
                 // Finished on the spot, so only arm the Esc watch once a
@@ -877,6 +916,7 @@ namespace ScreenPen
             {
                 _gifRecorder = null;
                 StopRecordingKeyWatch();
+                ResumeSpot();
                 rec.Dispose();
                 Balloon("无法开始录制", ex.Message, ToolTipIcon.Warning);
             }
@@ -1043,6 +1083,10 @@ namespace ScreenPen
         void StartColorPicker()
         {
             bool overlayWasVisible = _overlay.Visible;
+            // The loupe magnifies the live desktop, so a circle drawn at the
+            // pointer would be magnified too - and the sampled pixel would be the
+            // circle's own colour.
+            SuspendSpot();
             try
             {
                 Rectangle desktop = Native.VirtualScreen();
@@ -1105,6 +1149,7 @@ namespace ScreenPen
             {
                 Balloon("取色失败", ex.Message, ToolTipIcon.Warning);
             }
+            finally { ResumeSpot(); }
         }
 
         /// <summary>
@@ -1401,6 +1446,66 @@ namespace ScreenPen
         //  Settings
         // =====================================================================
 
+        /// <summary>
+        /// Flips the 浮标 on or off. Reachable from the tray tick and the global
+        /// hotkey, so it has to keep three things in step: the settings object,
+        /// the overlay itself, and the tray tick.
+        /// </summary>
+        void ToggleCursorSpot(bool fromTray)
+        {
+            _cfg.CursorSpotEnabled = !_cfg.CursorSpotEnabled;
+
+            if (_spot != null) _spot.ApplySettings(_cfg);
+            if (_spotItem != null) _spotItem.Checked = _cfg.CursorSpotEnabled;
+
+            // Persisted so the choice survives a restart. A failed write is not
+            // worth a dialog: the toggle has already taken effect for this run,
+            // and OpenSettings reports write failures where they matter.
+            try { SettingsStore.Save(_cfg); } catch { }
+
+            // The tray click already shows the new state in its tick; a hotkey
+            // press has no visible feedback at all, so it gets a balloon.
+            if (!fromTray)
+            {
+                Balloon(_cfg.CursorSpotEnabled ? "浮标已开启" : "浮标已关闭",
+                        _cfg.CursorSpotEnabled
+                            ? "指针周围会显示半透明圆圈。大小、颜色和透明度可在「设置 → 浮标」里调整。"
+                            : "按 " + _cfg.CursorSpotKey + " 可再次打开。",
+                        ToolTipIcon.Info);
+            }
+        }
+
+        /// <summary>Test seam: the live spot overlay, if one was created.</summary>
+        internal CursorSpotOverlay CursorSpotForTest { get { return _spot; } }
+
+        /// <summary>Test seam: runs the same toggle the tray item and hotkey use.</summary>
+        internal void ToggleCursorSpotForTest(bool fromTray) { ToggleCursorSpot(fromTray); }
+
+        /// <summary>Test seam: whether the tray item's tick matches the setting.</summary>
+        internal bool CursorSpotTrayCheckedForTest
+        {
+            get { return _spotItem != null && _spotItem.Checked; }
+        }
+
+        /// <summary>
+        /// Takes the circle off the screen while the user is aiming at something
+        /// precise: region selection and the colour picker.
+        ///
+        /// Both hand the user a frozen screenshot to aim at, and a circle that
+        /// keeps drawing on top of it is at best distracting - for the picker it
+        /// is actively wrong, because the loupe magnifies whatever is on screen,
+        /// so the sampled pixel would be the circle's own colour.
+        /// </summary>
+        void SuspendSpot()
+        {
+            if (_spot != null) _spot.Suspend();
+        }
+
+        void ResumeSpot()
+        {
+            if (_spot != null) _spot.Resume();
+        }
+
         void OpenSettings()
         {
             if (_settingsForm != null && !_settingsForm.IsDisposed)
@@ -1412,7 +1517,22 @@ namespace ScreenPen
 
             HideOverlay();
             _settingsForm = new SettingsForm(_cfg, IsHotkeyAvailable);
+
+            // Draw the 浮标 page's values on the real desktop while the dialog is
+            // open. Without this the user tunes a circle they cannot see: the
+            // values only reach the overlay on 保存, and the feature is usually
+            // still switched off while it is being set up.
+            _settingsForm.SpotPreviewChanged = delegate(Settings draft)
+            {
+                if (_spot != null) _spot.BeginPreview(draft);
+            };
+
             DialogResult r = _settingsForm.ShowDialog();
+
+            // Whatever the answer, drop the preview: OK adopts the new settings
+            // through ApplySettings below, Cancel must restore the old look.
+            if (_spot != null) _spot.EndPreview();
+
             if (r == DialogResult.OK && _settingsForm.Result != null)
             {
                 bool wasTray = _cfg.ShowTrayIcon;
@@ -1432,6 +1552,8 @@ namespace ScreenPen
 
                 // Push live-updatable settings into the overlay.
                 _overlay.ApplySettings(_cfg);
+                if (_spot != null) _spot.ApplySettings(_cfg);
+                if (_spotItem != null) _spotItem.Checked = _cfg.CursorSpotEnabled;
 
                 if (_tray != null) _tray.Visible = _cfg.ShowTrayIcon;
                 RegisterAllHotkeys();
@@ -1470,6 +1592,9 @@ namespace ScreenPen
                 // Pins are unowned top-level windows: without this they would stay
                 // floating over the desktop after the process exits its tray.
                 CloseAllPins();
+                // Same for the two 浮标 windows, and disposing also unhooks the
+                // static capture guard so it cannot outlive the process's state.
+                if (_spot != null) { try { _spot.Dispose(); } catch { } _spot = null; }
                 if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
                 if (_msgWindow != null) _msgWindow.DestroyHandle();
             }
@@ -1482,6 +1607,7 @@ namespace ScreenPen
             if (disposing)
             {
                 try { CloseAllPins(); } catch { }
+                try { if (_spot != null) { _spot.Dispose(); _spot = null; } } catch { }
                 try { if (_tray != null) _tray.Dispose(); } catch { }
                 try { if (_msgWindow != null) _msgWindow.Dispose(); } catch { }
                 try { if (_overlay != null) _overlay.Dispose(); } catch { }
